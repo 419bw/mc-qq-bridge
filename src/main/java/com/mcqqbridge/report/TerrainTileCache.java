@@ -46,17 +46,8 @@ public class TerrainTileCache implements Listener {
     private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES * 2; // rgb + height
     private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
     private static final int MAX_TERRAIN_SIDE = 4096;
-
-    private static final double HEIGHT_MIN = -64.0;
-    private static final double HEIGHT_MAX = 200.0;
     private static final int SEA_LEVEL = 63;
-    private static final double LIGHT_X = -0.7;
-    private static final double LIGHT_Z = -0.7;
-    private static final double HILL_K = 0.015;
-    private static final double SHADE_MIN = 0.6;
-    private static final double SHADE_MAX = 1.4;
-    private static final double BRIGHT_MIN = 0.7;
-    private static final double BRIGHT_MAX = 1.15;
+    private static final int WATER_BASE_RGB = 0x4040FF; // mojang WATER 基色，用于识别水像素
 
     private static final int FALLBACK_RGB = 0x5F8250;
 
@@ -286,7 +277,6 @@ public class TerrainTileCache implements Listener {
         }
 
         int[] out = new int[n];
-        double heightRange = HEIGHT_MAX - HEIGHT_MIN;
         for (int j = 0; j < winH; j++) {
             for (int i = 0; i < winW; i++) {
                 int idx = j * winW + i;
@@ -295,16 +285,24 @@ public class TerrainTileCache implements Listener {
                     out[idx] = MAP_BG_RGB;
                     continue;
                 }
-                int h = hFlat[idx];
-                int hE = i + 1 < winW ? hFlat[idx + 1] : h;
-                int hW = i - 1 >= 0 ? hFlat[idx - 1] : h;
-                int hS = j + 1 < winH ? hFlat[idx + winW] : h;
-                int hN = j - 1 >= 0 ? hFlat[idx - winW] : h;
-                double slope = (hE - hW) * LIGHT_X + (hS - hN) * LIGHT_Z;
-                double shade = clampD(1.0 + slope * HILL_K, SHADE_MIN, SHADE_MAX);
-                double bright = clampD(BRIGHT_MIN + (BRIGHT_MAX - BRIGHT_MIN) * ((h - HEIGHT_MIN) / heightRange),
-                        BRIGHT_MIN, BRIGHT_MAX);
-                out[idx] = applyFactor(base, shade * bright);
+                int parity = (i + j) & 1; // 棋盘抖动，与 mojang 一致
+                int shade;
+                if (base == WATER_BASE_RGB) {
+                    // 水：原版按水深分档；水深未缓存，按浅水(depth=0)处理
+                    double d2 = parity * 0.2;
+                    shade = 1;
+                    if (d2 < 0.5) shade = 2;
+                    else if (d2 > 0.9) shade = 0;
+                } else {
+                    // 陆地：与北邻居高度差，scale0 公式 (h-hN)*0.8 + dither，阈值 ±0.6 分三档
+                    int h = hFlat[idx];
+                    int hN = j > 0 ? hFlat[idx - winW] : 0; // 首行无北邻居，mojang d0=0
+                    double d2 = (h - hN) * 4.0 / (1 + 4) + (parity - 0.5) * 0.4;
+                    shade = 1;
+                    if (d2 > 0.6) shade = 2;
+                    else if (d2 < -0.6) shade = 0;
+                }
+                out[idx] = applyShade(base, shade);
             }
         }
 
@@ -347,18 +345,16 @@ public class TerrainTileCache implements Listener {
         }
     }
 
-    private static int applyFactor(int rgb, double factor) {
-        int r = clamp((int) (((rgb >> 16) & 0xFF) * factor));
-        int g = clamp((int) (((rgb >> 8) & 0xFF) * factor));
-        int b = clamp((int) ((rgb & 0xFF) * factor));
+    private static int applyShade(int base, int shade) {
+        int mult = switch (shade) {
+            case 0 -> 180;
+            case 2 -> 255;
+            case 3 -> 135;
+            default -> 220;
+        };
+        int r = ((base >> 16) & 0xFF) * mult / 255;
+        int g = ((base >> 8) & 0xFF) * mult / 255;
+        int b = (base & 0xFF) * mult / 255;
         return (r << 16) | (g << 8) | b;
-    }
-
-    private static int clamp(int v) {
-        return Math.max(0, Math.min(255, v));
-    }
-
-    private static double clampD(double v, double min, double max) {
-        return Math.max(min, Math.min(max, v));
     }
 }
