@@ -1,4 +1,4 @@
-package com.mcqqbridge;
+package com.mcqqbridge.qq;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -343,5 +343,68 @@ public class QQBotClient {
         });
     }
 
-    public record QQGroupMessage(String groupOpenId, String nickname, String content, String msgId) {}
+    public void sendGroupImage(String groupOpenId, byte[] png) {
+        if (groupOpenId == null || groupOpenId.isEmpty()) {
+            logger.warning("[QQBot] Cannot send image: group_openid not set");
+            return;
+        }
+        if (png == null || png.length == 0) {
+            logger.warning("[QQBot] Cannot send image: empty image data");
+            return;
+        }
+        scheduler.execute(() -> {
+            try {
+                ensureToken();
+                String fileInfo = uploadGroupFile(groupOpenId, png);
+                if (fileInfo == null) {
+                    return;
+                }
+                JsonObject media = new JsonObject();
+                media.addProperty("file_info", fileInfo);
+                JsonObject body = new JsonObject();
+                body.addProperty("msg_type", 7);
+                body.add("media", media);
+
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(API_BASE + "/v2/groups/" + groupOpenId + "/messages"))
+                        .header("Authorization", "QQBot " + accessToken)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                        .timeout(Duration.ofSeconds(10))
+                        .build();
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() >= 400) {
+                    logger.warning("[QQBot] Send image failed: " + response.statusCode() + " " + response.body());
+                }
+            } catch (Exception e) {
+                logger.warning("[QQBot] Send image error: " + e.getMessage());
+            }
+        });
+    }
+
+    private String uploadGroupFile(String groupOpenId, byte[] png) throws Exception {
+        JsonObject body = new JsonObject();
+        body.addProperty("file_type", 1);
+        body.addProperty("file_data", java.util.Base64.getEncoder().encodeToString(png));
+        body.addProperty("srv_send_msg", false);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(API_BASE + "/v2/groups/" + groupOpenId + "/files"))
+                .header("Authorization", "QQBot " + accessToken)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+                .timeout(Duration.ofSeconds(20))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() >= 400) {
+            logger.warning("[QQBot] Upload image failed: " + response.statusCode() + " " + response.body());
+            return null;
+        }
+        JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
+        if (!json.has("file_info")) {
+            logger.warning("[QQBot] Upload image response missing file_info: " + response.body());
+            return null;
+        }
+        return json.get("file_info").getAsString();
+    }
 }

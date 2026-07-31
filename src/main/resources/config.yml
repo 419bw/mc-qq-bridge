@@ -8,3 +8,13 @@ bridge:
   qq-to-mc: true
   mc-format: "[MC] <{player}> {message}"
   qq-format: "[QQ] <{nickname}> {message}"
+report:
+  enabled: true
+  time: "23:00"
+  retention-days: 30
+  map:
+    max-width: 1024
+    padding: 64
+  trail:
+    time-threshold-sec: 5
+    stay-threshold-sec: 30
