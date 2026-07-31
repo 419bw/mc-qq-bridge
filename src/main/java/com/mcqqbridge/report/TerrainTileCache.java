@@ -2,6 +2,7 @@ package com.mcqqbridge.report;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -43,7 +44,7 @@ import java.util.stream.Stream;
 public class TerrainTileCache implements Listener {
 
     private static final int TILE_PIXELS = 16;
-    private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES * 2; // rgb + height
+    private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES * 3; // rgb + height + waterDepth
     private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
     private static final int MAX_TERRAIN_SIDE = 4096;
     private static final int SEA_LEVEL = 63;
@@ -59,7 +60,7 @@ public class TerrainTileCache implements Listener {
     private final Map<String, Set<Long>> pendingByWorld = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastRenderChunk = new ConcurrentHashMap<>();
 
-    private record TileData(int[] rgb, int[] height) {}
+    private record TileData(int[] rgb, int[] height, int[] waterDepth) {}
 
     public TerrainTileCache(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -186,16 +187,29 @@ public class TerrainTileCache implements Listener {
     private TileData renderChunk(ChunkSnapshot snapshot) {
         int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
         int[] height = new int[TILE_PIXELS * TILE_PIXELS];
+        int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS];
         for (int lz = 0; lz < TILE_PIXELS; lz++) {
             for (int lx = 0; lx < TILE_PIXELS; lx++) {
                 int h = snapshot.getHighestBlockYAt(lx, lz);
                 int idx = lz * TILE_PIXELS + lx;
                 height[idx] = h;
-                var mapColor = snapshot.getBlockData(lx, h, lz).getMapColor();
-                rgb[idx] = mapColor != null ? mapColor.asRGB() : FALLBACK_RGB; // 方块级地图色，光照在拼图时统一算
+                var bd = snapshot.getBlockData(lx, h, lz);
+                var mapColor = bd.getMapColor();
+                rgb[idx] = mapColor != null ? mapColor.asRGB() : FALLBACK_RGB; // 方块级地图色，明暗在拼图时按原版算法算
+                int wd = 0;
+                if (bd.getMaterial() == Material.WATER) {
+                    for (int y = h; y > h - 64 && y >= -64; y--) {
+                        if (snapshot.getBlockType(lx, y, lz) == Material.WATER) {
+                            wd++;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                waterDepth[idx] = wd;
             }
         }
-        return new TileData(rgb, height);
+        return new TileData(rgb, height, waterDepth);
     }
 
     private void writeTile(String worldName, int cx, int cz, TileData tile) throws IOException {
@@ -206,6 +220,9 @@ public class TerrainTileCache implements Listener {
             bb.putInt(v);
         }
         for (int v : tile.height) {
+            bb.putInt(v);
+        }
+        for (int v : tile.waterDepth) {
             bb.putInt(v);
         }
         Files.write(file, bb.array());
@@ -224,9 +241,11 @@ public class TerrainTileCache implements Listener {
             ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
             int[] height = new int[TILE_PIXELS * TILE_PIXELS];
+            int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS];
             bb.asIntBuffer().get(rgb);
             bb.asIntBuffer().get(height);
-            return new TileData(rgb, height);
+            bb.asIntBuffer().get(waterDepth);
+            return new TileData(rgb, height, waterDepth);
         } catch (IOException e) {
             logger.warning("[Terrain] read tile failed for " + worldName + " " + cx + "," + cz + ": " + e.getMessage());
             return null;
@@ -248,6 +267,7 @@ public class TerrainTileCache implements Listener {
         int n = winW * winH;
         int[] rgbFlat = new int[n];
         int[] hFlat = new int[n];
+        int[] wFlat = new int[n];
         Arrays.fill(rgbFlat, MAP_BG_RGB);
         Arrays.fill(hFlat, SEA_LEVEL);
 
@@ -272,6 +292,7 @@ public class TerrainTileCache implements Listener {
                     int idx = j * winW + i;
                     rgbFlat[idx] = cur.rgb[cidx];
                     hFlat[idx] = cur.height[cidx];
+                    wFlat[idx] = cur.waterDepth[cidx];
                 }
             }
         }
@@ -288,8 +309,8 @@ public class TerrainTileCache implements Listener {
                 int parity = (i + j) & 1; // 棋盘抖动，与 mojang 一致
                 int shade;
                 if (base == WATER_BASE_RGB) {
-                    // 水：原版按水深分档；水深未缓存，按浅水(depth=0)处理
-                    double d2 = parity * 0.2;
+                    // 水：原版按水深分档 d2 = depth*0.1 + parity*0.2
+                    double d2 = wFlat[idx] * 0.1 + parity * 0.2;
                     shade = 1;
                     if (d2 < 0.5) shade = 2;
                     else if (d2 > 0.9) shade = 0;
