@@ -1,5 +1,13 @@
 name: McQqBridge
-version: 1.0.0
+version: 1.1.0
 main: com.mcqqbridge.McQqBridgePlugin
 api-version: '1.21'
 description: Bridge MC chat with QQ official bot
+commands:
+  mcqq:
+    description: McQqBridge management commands
+    usage: /mcqq mode <chat|full> | /mcqq status
+permissions:
+  mcqq.admin:
+    description: Allows using /mcqq commands
+    default: op

@@ -3,6 +3,7 @@ qq:
   app-secret: "YOUR_APP_SECRET"
   group-openid: ""
 bridge:
+  mode: chat
   mc-to-qq: true
   qq-to-mc: true
   mc-format: "[MC] <{player}> {message}"
