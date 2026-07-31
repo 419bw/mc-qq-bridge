@@ -109,7 +109,8 @@ public class MapRenderer {
             g.fillRect(0, 0, canvasW, header);
 
             if (terrain != null) {
-                g.drawImage(terrain, 0, header, canvasW, totalH, 0, 0, winW, winH, null);
+                g.drawImage(terrain, 0, header, canvasW, totalH,
+                        0, 0, terrain.getWidth(), terrain.getHeight(), null);
             } else {
                 g.setColor(MAP_BG);
                 g.fillRect(0, header, canvasW, canvasH);

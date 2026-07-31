@@ -258,18 +258,27 @@ public class TerrainTileCache implements Listener {
     }
 
     /**
-     * 按世界坐标窗口从磁盘拼出带坡度阴影的底图。两遍法：先拼 RGB 场+高度场，
-     * 再对高度场做光照卷积乘到 RGB 上，保证坡面明暗连续、无 16 格网格缝。
-     * win 边长超过上限返回 null（降级，防超大图）。缺失/未渲染区块填深色且不参与光照。
+     * 按世界坐标窗口从磁盘拼出带坡度阴影的底图。自动选择缩放级别（step = 2^n），
+     * 使输出图片不超过 MAX_TERRAIN_SIDE 像素。step=1 时每像素一个方块；
+     * step=4 时每像素代表 4x4 区域（采样中心点），大尺度坡度阴影保留。
+     * 缺失/未渲染区块填深色且不参与光照。
      */
     public BufferedImage buildTerrainImage(World overworld, int winMinX, int winMinZ, int winW, int winH) {
-        if (winW > MAX_TERRAIN_SIDE || winH > MAX_TERRAIN_SIDE || winW <= 0 || winH <= 0) {
+        if (winW <= 0 || winH <= 0) {
             return null;
         }
+        int step = 1;
+        while (winW / step > MAX_TERRAIN_SIDE || winH / step > MAX_TERRAIN_SIDE) {
+            step <<= 1;
+        }
+
+        int outW = (winW + step - 1) / step;
+        int outH = (winH + step - 1) / step;
+
         String w = overworld.getName();
         Set<Long> rendered = renderedByWorld.getOrDefault(w, Set.of());
 
-        int n = winW * winH;
+        int n = outW * outH;
         int[] rgbFlat = new int[n];
         int[] hFlat = new int[n];
         int[] wFlat = new int[n];
@@ -279,12 +288,12 @@ public class TerrainTileCache implements Listener {
         int lastCx = Integer.MIN_VALUE;
         int lastCz = Integer.MIN_VALUE;
         TileData cur = null;
-        for (int j = 0; j < winH; j++) {
-            int worldZ = winMinZ + j;
+        for (int j = 0; j < outH; j++) {
+            int worldZ = winMinZ + j * step + step / 2;
             int cz = Math.floorDiv(worldZ, TILE_PIXELS);
             int lz = Math.floorMod(worldZ, TILE_PIXELS);
-            for (int i = 0; i < winW; i++) {
-                int worldX = winMinX + i;
+            for (int i = 0; i < outW; i++) {
+                int worldX = winMinX + i * step + step / 2;
                 int cx = Math.floorDiv(worldX, TILE_PIXELS);
                 if (cx != lastCx || cz != lastCz) {
                     lastCx = cx;
@@ -294,7 +303,7 @@ public class TerrainTileCache implements Listener {
                 if (cur != null) {
                     int lx = Math.floorMod(worldX, TILE_PIXELS);
                     int cidx = lz * TILE_PIXELS + lx;
-                    int idx = j * winW + i;
+                    int idx = j * outW + i;
                     rgbFlat[idx] = cur.rgb[cidx];
                     hFlat[idx] = cur.height[cidx];
                     wFlat[idx] = cur.waterDepth[cidx];
@@ -303,27 +312,25 @@ public class TerrainTileCache implements Listener {
         }
 
         int[] out = new int[n];
-        for (int j = 0; j < winH; j++) {
-            for (int i = 0; i < winW; i++) {
-                int idx = j * winW + i;
+        for (int j = 0; j < outH; j++) {
+            for (int i = 0; i < outW; i++) {
+                int idx = j * outW + i;
                 int base = rgbFlat[idx];
                 if (base == MAP_BG_RGB) {
                     out[idx] = MAP_BG_RGB;
                     continue;
                 }
-                int parity = (i + j) & 1; // 棋盘抖动，与 mojang 一致
+                int parity = (i + j) & 1;
                 int shade;
                 if (base == WATER_BASE_RGB) {
-                    // 水：原版按水深分档 d2 = depth*0.1 + parity*0.2
                     double d2 = wFlat[idx] * 0.1 + parity * 0.2;
                     shade = 1;
                     if (d2 < 0.5) shade = 2;
                     else if (d2 > 0.9) shade = 0;
                 } else {
-                    // 陆地：与北邻居高度差，scale0 公式 (h-hN)*0.8 + dither，阈值 ±0.6 分三档
                     int h = hFlat[idx];
-                    int hN = j > 0 ? hFlat[idx - winW] : 0; // 首行无北邻居，mojang d0=0
-                    double d2 = (h - hN) * 4.0 / (1 + 4) + (parity - 0.5) * 0.4;
+                    int hN = j > 0 ? hFlat[idx - outW] : 0;
+                    double d2 = (h - hN) * 4.0 / (step * 5.0) + (parity - 0.5) * 0.4;
                     shade = 1;
                     if (d2 > 0.6) shade = 2;
                     else if (d2 < -0.6) shade = 0;
@@ -332,8 +339,8 @@ public class TerrainTileCache implements Listener {
             }
         }
 
-        BufferedImage img = new BufferedImage(winW, winH, BufferedImage.TYPE_INT_RGB);
-        img.setRGB(0, 0, winW, winH, out, 0, winW);
+        BufferedImage img = new BufferedImage(outW, outH, BufferedImage.TYPE_INT_RGB);
+        img.setRGB(0, 0, outW, outH, out, 0, outW);
         return img;
     }
 
