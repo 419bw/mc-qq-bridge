@@ -180,6 +180,10 @@ public class DailyReportScheduler {
         } else {
             logger.info("[Report] no map generated (no tracked activity)");
         }
+
+        if (terrainCache != null) {
+            terrainCache.resetFreshMarkers();
+        }
     }
 
     private void pruneMemory() {

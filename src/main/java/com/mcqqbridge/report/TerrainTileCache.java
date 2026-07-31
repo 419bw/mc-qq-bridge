@@ -58,6 +58,7 @@ public class TerrainTileCache implements Listener {
     private final Logger logger;
     private final ExecutorService renderExecutor;
     private final Map<String, Set<Long>> renderedByWorld = new ConcurrentHashMap<>();
+    private final Map<String, Set<Long>> freshByWorld = new ConcurrentHashMap<>();
     private final Map<String, Set<Long>> pendingByWorld = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastRenderChunk = new ConcurrentHashMap<>();
 
@@ -87,6 +88,7 @@ public class TerrainTileCache implements Listener {
                 }
                 String worldName = worldDir.getFileName().toString();
                 Set<Long> set = renderedByWorld.computeIfAbsent(worldName, w -> ConcurrentHashMap.newKeySet());
+                Set<Long> fresh = freshByWorld.computeIfAbsent(worldName, w -> ConcurrentHashMap.newKeySet());
                 try (Stream<Path> files = Files.list(worldDir)) {
                     for (Path f : (Iterable<Path>) files::iterator) {
                         Long key = parseTileName(f.getFileName().toString());
@@ -94,6 +96,7 @@ public class TerrainTileCache implements Listener {
                             try {
                                 if (Files.size(f) >= TILE_BYTES) {
                                     set.add(key);
+                                    fresh.add(key);
                                     total++;
                                 }
                             } catch (IOException ignored) {
@@ -150,8 +153,8 @@ public class TerrainTileCache implements Listener {
     private void ensureRendered(World world, int cx, int cz) {
         String w = world.getName();
         long key = pack(cx, cz);
-        Set<Long> rendered = renderedByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet());
-        if (rendered.contains(key)) {
+        Set<Long> fresh = freshByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet());
+        if (fresh.contains(key)) {
             return;
         }
         Set<Long> pending = pendingByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet());
@@ -171,7 +174,8 @@ public class TerrainTileCache implements Listener {
                 try {
                     TileData tile = renderChunk(snapshot);
                     writeTile(w, cx, cz, tile);
-                    rendered.add(key);
+                    renderedByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet()).add(key);
+                    fresh.add(key);
                 } catch (Exception e) {
                     logger.warning("[Terrain] render/write failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
                 } finally {
@@ -335,6 +339,12 @@ public class TerrainTileCache implements Listener {
 
     public int tileCount() {
         return renderedByWorld.values().stream().mapToInt(Set::size).sum();
+    }
+
+    /** 日报生成后调用：清除本轮渲染标记，玩家再次经过的区块将重新渲染以反映最新地形。 */
+    public void resetFreshMarkers() {
+        freshByWorld.clear();
+        lastRenderChunk.clear();
     }
 
     public void shutdown() {
