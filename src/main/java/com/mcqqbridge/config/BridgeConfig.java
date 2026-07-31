@@ -30,6 +30,7 @@ public class BridgeConfig {
     private int mapPadding;
     private long trailIntervalMs;
     private long stayThresholdMs;
+    private boolean terrainEnabled;
 
     public BridgeConfig(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -60,6 +61,7 @@ public class BridgeConfig {
         mapPadding = c.getInt("report.map.padding", 64);
         trailIntervalMs = c.getInt("report.trail.time-threshold-sec", 5) * 1000L;
         stayThresholdMs = c.getInt("report.trail.stay-threshold-sec", 30) * 1000L;
+        terrainEnabled = c.getBoolean("report.terrain.enabled", true);
     }
 
     private void parseReportTime(String time) {
@@ -139,6 +141,10 @@ public class BridgeConfig {
 
     public long getStayThresholdMs() {
         return stayThresholdMs;
+    }
+
+    public boolean isTerrainEnabled() {
+        return terrainEnabled;
     }
 
     public void setMode(BridgeMode newMode) {

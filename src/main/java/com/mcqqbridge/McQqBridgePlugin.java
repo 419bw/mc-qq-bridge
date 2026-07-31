@@ -7,6 +7,7 @@ import com.mcqqbridge.qq.QQBotClient;
 import com.mcqqbridge.report.DailyReportScheduler;
 import com.mcqqbridge.report.MapRenderer;
 import com.mcqqbridge.report.ReportFormatter;
+import com.mcqqbridge.report.TerrainTileCache;
 import com.mcqqbridge.stats.DataStore;
 import com.mcqqbridge.stats.PlayerTracker;
 import org.bukkit.Bukkit;
@@ -17,6 +18,7 @@ public class McQqBridgePlugin extends JavaPlugin {
     private BridgeConfig config;
     private QQBotClient qqClient;
     private PlayerTracker tracker;
+    private TerrainTileCache terrainCache;
     private DailyReportScheduler reportScheduler;
 
     @Override
@@ -40,11 +42,16 @@ public class McQqBridgePlugin extends JavaPlugin {
         tracker = new PlayerTracker(this, config.getTrailIntervalMs(), config.getStayThresholdMs());
         Bukkit.getPluginManager().registerEvents(tracker, this);
 
+        if (config.isTerrainEnabled()) {
+            terrainCache = new TerrainTileCache(this);
+            Bukkit.getPluginManager().registerEvents(terrainCache, this);
+        }
+
         DataStore dataStore = new DataStore(this, config.getStayThresholdMs());
-        MapRenderer renderer = new MapRenderer(this, config.getMapMaxWidth(), config.getMapPadding());
+        MapRenderer renderer = new MapRenderer(config.getMapMaxWidth(), config.getMapPadding());
         ReportFormatter formatter = new ReportFormatter();
         reportScheduler = new DailyReportScheduler(this, config, tracker, dataStore, renderer,
-                formatter, qqClient, config.getReportHour(), config.getReportMinute(),
+                formatter, qqClient, terrainCache, config.getReportHour(), config.getReportMinute(),
                 config.getRetentionDays(), config.isReportEnabled());
         reportScheduler.start();
 
@@ -59,6 +66,9 @@ public class McQqBridgePlugin extends JavaPlugin {
     public void onDisable() {
         if (reportScheduler != null) {
             reportScheduler.stop();
+        }
+        if (terrainCache != null) {
+            terrainCache.shutdown();
         }
         if (qqClient != null) {
             qqClient.stop();

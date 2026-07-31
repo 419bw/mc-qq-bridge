@@ -18,3 +18,5 @@ report:
   trail:
     time-threshold-sec: 5
     stay-threshold-sec: 30
+  terrain:
+    enabled: true

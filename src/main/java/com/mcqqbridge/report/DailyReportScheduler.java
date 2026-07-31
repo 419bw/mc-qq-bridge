@@ -7,10 +7,12 @@ import com.mcqqbridge.stats.DailyRecord.PlayerSnapshot;
 import com.mcqqbridge.stats.DataStore;
 import com.mcqqbridge.stats.PlayerTracker;
 import org.bukkit.Bukkit;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -24,7 +26,7 @@ import java.util.logging.Logger;
 
 /**
  * 日报定时调度。定时触发在主线程采集在线玩家快照（Bukkit 玩家数据须主线程读取），
- * 随后切换到异步线程执行落盘、清理、渲染与发送，避免阻塞主线程。
+ * 随后切换到异步线程执行落盘、清理、底图拼接、渲染与发送，避免阻塞主线程。
  */
 public class DailyReportScheduler {
 
@@ -35,6 +37,7 @@ public class DailyReportScheduler {
     private final MapRenderer renderer;
     private final ReportFormatter formatter;
     private final QQBotClient qqClient;
+    private final TerrainTileCache terrainCache;
     private final int hour;
     private final int minute;
     private final int retentionDays;
@@ -45,7 +48,8 @@ public class DailyReportScheduler {
 
     public DailyReportScheduler(JavaPlugin plugin, BridgeConfig config, PlayerTracker tracker,
                                 DataStore dataStore, MapRenderer renderer, ReportFormatter formatter,
-                                QQBotClient qqClient, int hour, int minute, int retentionDays, boolean enabled) {
+                                QQBotClient qqClient, TerrainTileCache terrainCache,
+                                int hour, int minute, int retentionDays, boolean enabled) {
         this.plugin = plugin;
         this.config = config;
         this.tracker = tracker;
@@ -53,6 +57,7 @@ public class DailyReportScheduler {
         this.renderer = renderer;
         this.formatter = formatter;
         this.qqClient = qqClient;
+        this.terrainCache = terrainCache;
         this.hour = hour;
         this.minute = minute;
         this.retentionDays = retentionDays;
@@ -157,7 +162,19 @@ public class DailyReportScheduler {
         String text = formatter.format(data, record.getDate());
         qqClient.sendGroupMessage(gid, text);
 
-        byte[] png = renderer.render(snap, record.getDate());
+        int[] win = MapRenderer.computeWindow(snap, config.getMapPadding());
+        BufferedImage terrain = null;
+        if (win != null && terrainCache != null) {
+            World overworld = Bukkit.getWorlds().stream()
+                    .filter(w -> w.getEnvironment() == World.Environment.NORMAL)
+                    .findFirst().orElse(null);
+            if (overworld != null) {
+                terrain = terrainCache.buildTerrainImage(overworld, win[0], win[1], win[2], win[3]);
+            }
+            logger.info("[Report] terrain tiles on disk: " + terrainCache.tileCount());
+        }
+
+        byte[] png = renderer.render(snap, record.getDate(), terrain, win);
         if (png != null) {
             qqClient.sendGroupImage(gid, png);
         } else {

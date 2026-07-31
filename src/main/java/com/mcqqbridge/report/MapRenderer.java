@@ -1,13 +1,9 @@
 package com.mcqqbridge.report;
 
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.mcqqbridge.stats.DailyRecord;
 import com.mcqqbridge.stats.DailyRecord.GameEvent;
 import com.mcqqbridge.stats.DailyRecord.PlayerSnapshot;
 import com.mcqqbridge.stats.DailyRecord.Stay;
 import com.mcqqbridge.stats.DailyRecord.TrailPoint;
-import org.bukkit.plugin.java.JavaPlugin;
 
 import javax.imageio.ImageIO;
 import java.awt.BasicStroke;
@@ -18,9 +14,6 @@ import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,15 +22,17 @@ import java.util.logging.Logger;
 import static com.mcqqbridge.stats.DailyRecord.UNDERGROUND_Y;
 
 /**
- * 将当日轨迹/事件渲染为 PNG 探索地图。
- * 底图（Chunky 导出）+ meta.json 提供像素↔世界坐标映射；缺失时降级为纯色背景，轨迹仍按世界坐标正确绘制。
- * 渲染在调用线程执行（须在异步线程调用，含图像解码与 AWT 绘制）。
+ * 将当日轨迹/事件渲染为 PNG 探索地图，叠加在调用方提供的地形底图上。
+ * 底图由 TerrainTileCache 按轨迹窗口从磁盘拼出（每格1像素，尺寸=窗口格数）；底图为 null 时降级为纯色背景。
+ * 矢量叠加（轨迹/停留/事件/标签/标题/图例）与底图来源无关。渲染须在异步线程调用（含 AWT 绘制）。
  */
 public class MapRenderer {
 
     static {
         System.setProperty("java.awt.headless", "true");
     }
+
+    private static final Logger LOGGER = Logger.getLogger("McQqBridge.MapRenderer");
 
     private static final Color[] PALETTE = {
             new Color(231, 76, 60),   // 红
@@ -52,58 +47,19 @@ public class MapRenderer {
     private static final Color DEATH_COLOR = new Color(255, 70, 70);
     private static final Color ADVANCE_COLOR = new Color(255, 215, 0);
 
-    private final Path basemapPath;
-    private final Path metaPath;
     private final int maxWidth;
     private final int padding;
-    private final Logger logger;
 
-    private volatile boolean loaded;
-    private BufferedImage basemap;
-    private Meta meta;
-
-    private record Meta(int centerX, int centerZ, double blocksPerPixel, int width, int height) {}
-
-    public MapRenderer(JavaPlugin plugin, int maxWidth, int padding) {
-        this.basemapPath = plugin.getDataFolder().toPath().resolve("map").resolve("basemap.png");
-        this.metaPath = plugin.getDataFolder().toPath().resolve("map").resolve("meta.json");
+    public MapRenderer(int maxWidth, int padding) {
         this.maxWidth = maxWidth;
         this.padding = padding;
-        this.logger = plugin.getLogger();
     }
 
-    private void ensureLoaded() {
-        if (loaded) return;
-        synchronized (this) {
-            if (loaded) return;
-            try {
-                if (Files.isRegularFile(basemapPath) && Files.isRegularFile(metaPath)) {
-                    basemap = ImageIO.read(basemapPath.toFile());
-                    String json = Files.readString(metaPath, StandardCharsets.UTF_8);
-                    JsonObject o = JsonParser.parseString(json).getAsJsonObject();
-                    meta = new Meta(
-                            o.get("centerX").getAsInt(),
-                            o.get("centerZ").getAsInt(),
-                            o.get("blocksPerPixel").getAsDouble(),
-                            o.get("width").getAsInt(),
-                            o.get("height").getAsInt());
-                    logger.info("[MapRenderer] basemap loaded: " + meta.width + "x" + meta.height
-                            + ", bpp=" + meta.blocksPerPixel);
-                } else {
-                    logger.info("[MapRenderer] basemap/meta not found, rendering without terrain background");
-                }
-            } catch (Exception e) {
-                logger.warning("[MapRenderer] failed to load basemap/meta: " + e.getMessage());
-                basemap = null;
-                meta = null;
-            }
-            loaded = true;
-        }
-    }
-
-    public byte[] render(Map<String, PlayerSnapshot> snapshots, String date) {
-        ensureLoaded();
-
+    /**
+     * 计算轨迹/事件的世界坐标窗口（含 padding）。无活动返回 null。
+     * 返回 {winMinX, winMinZ, winW, winH}，供底图拼接与渲染共用，保证坐标一致。
+     */
+    public static int[] computeWindow(Map<String, PlayerSnapshot> snapshots, int padding) {
         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
         boolean any = false;
@@ -122,11 +78,18 @@ public class MapRenderer {
         if (!any) {
             return null;
         }
+        int winMinX = minX - padding;
+        int winMinZ = minZ - padding;
+        int winW = Math.max(1, (maxX + padding) - winMinX);
+        int winH = Math.max(1, (maxZ + padding) - winMinZ);
+        return new int[]{winMinX, winMinZ, winW, winH};
+    }
 
-        int winMinX = minX - padding, winMaxX = maxX + padding;
-        int winMinZ = minZ - padding, winMaxZ = maxZ + padding;
-        int winW = Math.max(1, winMaxX - winMinX);
-        int winH = Math.max(1, winMaxZ - winMinZ);
+    public byte[] render(Map<String, PlayerSnapshot> snapshots, String date, BufferedImage terrain, int[] win) {
+        if (win == null) {
+            return null;
+        }
+        int winMinX = win[0], winMinZ = win[1], winW = win[2], winH = win[3];
 
         double outScale = Math.min(2.0, (double) maxWidth / winW);
         if (outScale < 0.25) outScale = 0.25;
@@ -145,17 +108,8 @@ public class MapRenderer {
             g.setColor(HEADER_BG);
             g.fillRect(0, 0, canvasW, header);
 
-            if (basemap != null && meta != null) {
-                int srcX1 = clamp(worldToMetaX(winMinX), 0, meta.width);
-                int srcX2 = clamp(worldToMetaX(winMaxX), 0, meta.width);
-                int srcY1 = clamp(worldToMetaZ(winMinZ), 0, meta.height);
-                int srcY2 = clamp(worldToMetaZ(winMaxZ), 0, meta.height);
-                if (srcX2 > srcX1 && srcY2 > srcY1) {
-                    g.drawImage(basemap, 0, header, canvasW, totalH, srcX1, srcY1, srcX2, srcY2, null);
-                } else {
-                    g.setColor(MAP_BG);
-                    g.fillRect(0, header, canvasW, canvasH);
-                }
+            if (terrain != null) {
+                g.drawImage(terrain, 0, header, canvasW, totalH, 0, 0, winW, winH, null);
             } else {
                 g.setColor(MAP_BG);
                 g.fillRect(0, header, canvasW, canvasH);
@@ -249,17 +203,9 @@ public class MapRenderer {
             ImageIO.write(img, "png", out);
             return out.toByteArray();
         } catch (IOException e) {
-            logger.warning("[MapRenderer] encode png failed: " + e.getMessage());
+            LOGGER.warning("[MapRenderer] encode png failed: " + e.getMessage());
             return null;
         }
-    }
-
-    private int worldToMetaX(int worldX) {
-        return (int) Math.round((worldX - meta.centerX) / meta.blocksPerPixel + meta.width / 2.0);
-    }
-
-    private int worldToMetaZ(int worldZ) {
-        return (int) Math.round((worldZ - meta.centerZ) / meta.blocksPerPixel + meta.height / 2.0);
     }
 
     private int toPx(int worldX, int winMinX, double outScale) {
