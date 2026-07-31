@@ -1,0 +1,5 @@
+name: McQqBridge
+version: 1.0.0
+main: com.mcqqbridge.McQqBridgePlugin
+api-version: '1.21'
+description: Bridge MC chat with QQ official bot

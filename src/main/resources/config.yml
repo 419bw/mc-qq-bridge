@@ -1,0 +1,9 @@
+qq:
+  app-id: "YOUR_APP_ID"
+  app-secret: "YOUR_APP_SECRET"
+  group-openid: ""
+bridge:
+  mc-to-qq: true
+  qq-to-mc: true
+  mc-format: "[MC] <{player}> {message}"
+  qq-format: "[QQ] <{nickname}> {message}"
