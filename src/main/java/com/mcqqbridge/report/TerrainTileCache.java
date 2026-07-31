@@ -3,7 +3,6 @@ package com.mcqqbridge.report;
 import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.World;
-import org.bukkit.block.Biome;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -59,21 +58,7 @@ public class TerrainTileCache implements Listener {
     private static final double BRIGHT_MIN = 0.7;
     private static final double BRIGHT_MAX = 1.15;
 
-    private static final Color C_WATER = new Color(45, 95, 180);
-    private static final Color C_SAND = new Color(220, 205, 140);
-    private static final Color C_DESERT = new Color(210, 180, 110);
-    private static final Color C_SNOW = new Color(235, 240, 245);
-    private static final Color C_SWAMP = new Color(70, 90, 55);
-    private static final Color C_JUNGLE = new Color(50, 110, 45);
-    private static final Color C_TAIGA = new Color(60, 95, 70);
-    private static final Color C_FOREST = new Color(55, 120, 50);
-    private static final Color C_SAVANNA = new Color(150, 150, 70);
-    private static final Color C_PLAINS = new Color(110, 160, 70);
-    private static final Color C_MUSHROOM = new Color(150, 90, 110);
-    private static final Color C_NETHER = new Color(110, 45, 45);
-    private static final Color C_END = new Color(120, 110, 80);
-    private static final Color C_STONE = new Color(90, 90, 95);
-    private static final Color C_DEFAULT = new Color(95, 130, 80);
+    private static final int FALLBACK_RGB = 0x5F8250;
 
     private final JavaPlugin plugin;
     private final Path tilesRoot;
@@ -213,10 +198,10 @@ public class TerrainTileCache implements Listener {
         for (int lz = 0; lz < TILE_PIXELS; lz++) {
             for (int lx = 0; lx < TILE_PIXELS; lx++) {
                 int h = snapshot.getHighestBlockYAt(lx, lz);
-                Biome biome = snapshot.getBiome(lx, h, lz);
                 int idx = lz * TILE_PIXELS + lx;
-                rgb[idx] = biomeColor(biome).getRGB(); // 基础色，光照在拼图时统一算
                 height[idx] = h;
+                var mapColor = snapshot.getBlockData(lx, h, lz).getMapColor();
+                rgb[idx] = mapColor != null ? mapColor.asRGB() : FALLBACK_RGB; // 方块级地图色，光照在拼图时统一算
             }
         }
         return new TileData(rgb, height);
@@ -360,25 +345,6 @@ public class TerrainTileCache implements Listener {
         } catch (NumberFormatException e) {
             return null;
         }
-    }
-
-    private static Color biomeColor(Biome biome) {
-        String k = biome.getKey().getKey();
-        if (k.contains("ocean") || k.contains("river")) return C_WATER;
-        if (k.contains("beach")) return C_SAND;
-        if (k.contains("desert") || k.contains("badland")) return C_DESERT;
-        if (k.contains("snow") || k.contains("ice") || k.contains("frozen")) return C_SNOW;
-        if (k.contains("swamp") || k.contains("mangrove")) return C_SWAMP;
-        if (k.contains("jungle")) return C_JUNGLE;
-        if (k.contains("taiga") || k.contains("grove")) return C_TAIGA;
-        if (k.contains("forest") || k.contains("birch")) return C_FOREST;
-        if (k.contains("savanna")) return C_SAVANNA;
-        if (k.contains("plains") || k.contains("meadow")) return C_PLAINS;
-        if (k.contains("mushroom")) return C_MUSHROOM;
-        if (k.contains("nether") || k.contains("warped") || k.contains("crimson") || k.contains("basalt") || k.contains("soul")) return C_NETHER;
-        if (k.contains("end") || k.contains("void")) return C_END;
-        if (k.contains("cave") || k.contains("deep_dark") || k.contains("dripstone") || k.contains("lush")) return C_STONE;
-        return C_DEFAULT;
     }
 
     private static int applyFactor(int rgb, double factor) {
