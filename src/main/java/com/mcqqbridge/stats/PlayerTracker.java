@@ -79,8 +79,11 @@ public class PlayerTracker implements Listener {
         statistics.recordBaseline(player);
         trailState.remove(id); // 进服首个移动点立即记录
         Location loc = player.getLocation();
-        todayRecord().addBreak(player.getName(), "JOIN", loc.getWorld().getName(),
-                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
+        String world = loc.getWorld().getName();
+        int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+        // 补记登录位置轨迹点（t+1 归入 JOIN 之后的段），使绿+ 落在轨迹起点
+        todayRecord().addTrail(player.getName(), bx, by, bz, now + 1, world);
+        todayRecord().addBreak(player.getName(), "JOIN", world, bx, by, bz, now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -131,8 +134,12 @@ public class PlayerTracker implements Listener {
                 || cause == PlayerTeleportEvent.TeleportCause.COMMAND
                 || cause == PlayerTeleportEvent.TeleportCause.PLUGIN) {
             Location loc = event.getFrom();
-            todayRecord().addBreak(player.getName(), "TP", loc.getWorld().getName(),
-                    loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), System.currentTimeMillis());
+            String world = loc.getWorld().getName();
+            int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+            long now = System.currentTimeMillis();
+            // 补记传送前位置轨迹点，使轨迹线延伸到灰点
+            todayRecord().addTrail(player.getName(), bx, by, bz, now, world);
+            todayRecord().addBreak(player.getName(), "TP", world, bx, by, bz, now);
         }
     }
 
