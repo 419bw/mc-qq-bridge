@@ -24,7 +24,7 @@ public class DailyRecord {
 
     public record TrailPoint(int x, int y, int z, long t, String world) {}
 
-    public record Stay(int x, int z, long startT, long endT, long minutes) {}
+    public record Stay(int x, int z, long startT, long endT, long minutes, String world) {}
 
     public record GameEvent(String type, String world, int x, int y, int z, long t, String text) {}
 
@@ -204,6 +204,7 @@ public class DailyRecord {
                 o.addProperty("startT", st.startT());
                 o.addProperty("endT", st.endT());
                 o.addProperty("minutes", st.minutes());
+                o.addProperty("world", st.world());
                 staysArr.add(o);
             }
             po.add("stays", staysArr);
@@ -254,7 +255,7 @@ public class DailyRecord {
             long gap = b.t() - a.t();
             // 跳过横跨断点的点对（退出/死亡/传送导致的离线或位移不算停留）
             if (gap >= stayThresholdMs && !hasBreakBetween(d.breaks, a.t(), b.t())) {
-                stays.add(new Stay(a.x(), a.z(), a.t(), b.t(), gap / 60000));
+                stays.add(new Stay(a.x(), a.z(), a.t(), b.t(), gap / 60000, a.world()));
             }
         }
         return stays;

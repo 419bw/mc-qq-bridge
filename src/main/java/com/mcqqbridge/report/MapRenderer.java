@@ -262,10 +262,11 @@ public class MapRenderer {
                 }
             }
 
-            // 停留圈
+            // 停留圈（仅主世界）
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
                 Color c = colors.get(e.getKey());
                 for (Stay st : e.getValue().stays()) {
+                    if (!mainWorld.equals(st.world())) continue;
                     int r = clamp(3 + (int) (st.minutes() / 2), 3, 14);
                     int cx = toPx(st.x(), winMinX, outScale);
                     int cy = toPy(st.z(), winMinZ, outScale, header);
