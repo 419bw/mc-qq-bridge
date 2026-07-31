@@ -252,10 +252,24 @@ public class DailyRecord {
             TrailPoint a = trail.get(i);
             TrailPoint b = trail.get(i + 1);
             long gap = b.t() - a.t();
-            if (gap >= stayThresholdMs) {
+            // 跳过横跨断点的点对（退出/死亡/传送导致的离线或位移不算停留）
+            if (gap >= stayThresholdMs && !hasBreakBetween(d.breaks, a.t(), b.t())) {
                 stays.add(new Stay(a.x(), a.z(), a.t(), b.t(), gap / 60000));
             }
         }
         return stays;
+    }
+
+    // 断点按时间升序；判断 (aT, bT] 区间内是否存在断点
+    private static boolean hasBreakBetween(List<BreakPoint> breaks, long aT, long bT) {
+        for (BreakPoint br : breaks) {
+            if (br.t() > bT) {
+                return false;
+            }
+            if (br.t() > aT) {
+                return true;
+            }
+        }
+        return false;
     }
 }
