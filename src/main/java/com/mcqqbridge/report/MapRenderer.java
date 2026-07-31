@@ -51,10 +51,11 @@ public class MapRenderer {
     private static final Color HEADER_BG = new Color(18, 20, 26);
     private static final Color DEATH_COLOR = new Color(255, 70, 70);
     private static final Color ADVANCE_COLOR = new Color(255, 215, 0);
-    private static final Color JOIN_COLOR = new Color(70, 210, 110);
-    private static final Color QUIT_COLOR = new Color(255, 90, 90);
+    private static final Color JOIN_COLOR = Color.WHITE;
+    private static final Color QUIT_COLOR = Color.BLACK;
     private static final Color REJOIN_COLOR = new Color(255, 200, 40);
     private static final Color TP_COLOR = new Color(150, 150, 150);
+    private static final Color MARK_TEXT_COLOR = Color.WHITE;
 
     private static final DateTimeFormatter HM_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault());
@@ -222,7 +223,7 @@ public class MapRenderer {
                 }
             }
 
-            // 会话标记（登录绿+ / 退出红- / 重登黄菱形 / 传送灰点）
+            // 会话标记（登录白点 / 退出黑点 / 重登黄菱形 / 传送灰点），时间字统一白字黑描边
             Font markerFont = new Font(Font.SANS_SERIF, Font.PLAIN, 8);
             g.setFont(markerFont);
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
@@ -243,16 +244,16 @@ public class MapRenderer {
                             if (Math.hypot(nx - px, ny - py) < 12) {
                                 drawDiamond(g, px, py, REJOIN_COLOR);
                                 long offlineMin = Math.max(0, (next.t() - b.t()) / 60000);
-                                drawOutlinedText(g, offlineMin + "m", px + 6, py - 4, REJOIN_COLOR);
+                                drawOutlinedText(g, offlineMin + "m", px + 6, py + 4, MARK_TEXT_COLOR);
                                 i++; // 跳过已合并的 JOIN
                                 continue;
                             }
                         }
-                        drawMinus(g, px, py, QUIT_COLOR);
-                        drawOutlinedText(g, formatHm(b.t()), px + 6, py - 4, QUIT_COLOR);
+                        drawDot(g, px, py, QUIT_COLOR, Color.WHITE);
+                        drawOutlinedText(g, formatHm(b.t()), px + 6, py + 4, MARK_TEXT_COLOR);
                     } else if ("JOIN".equals(b.type())) {
-                        drawPlus(g, px, py, JOIN_COLOR);
-                        drawOutlinedText(g, formatHm(b.t()), px + 6, py - 4, JOIN_COLOR);
+                        drawDot(g, px, py, JOIN_COLOR, Color.BLACK);
+                        drawOutlinedText(g, formatHm(b.t()), px + 6, py + 4, MARK_TEXT_COLOR);
                     } else if ("TP".equals(b.type())) {
                         g.setColor(TP_COLOR);
                         g.fillOval(px - 2, py - 2, 4, 4);
@@ -435,17 +436,11 @@ public class MapRenderer {
 
     // ---- 会话标记 ----
 
-    private void drawPlus(Graphics2D g, int x, int y, Color c) {
-        g.setColor(c);
-        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g.drawLine(x - 3, y, x + 3, y);
-        g.drawLine(x, y - 3, x, y + 3);
-    }
-
-    private void drawMinus(Graphics2D g, int x, int y, Color c) {
-        g.setColor(c);
-        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g.drawLine(x - 3, y, x + 3, y);
+    private void drawDot(Graphics2D g, int x, int y, Color fill, Color outline) {
+        g.setColor(outline);
+        g.fillOval(x - 3, y - 3, 6, 6);
+        g.setColor(fill);
+        g.fillOval(x - 2, y - 2, 4, 4);
     }
 
     private void drawDiamond(Graphics2D g, int x, int y, Color c) {
