@@ -122,6 +122,7 @@ public class PlayerTracker implements Listener {
         record.addTrail(player.getName(), bx, by, bz, now, world);
         record.addEvent(player.getName(), "death", world, bx, by, bz, now, text);
         record.addBreak(player.getName(), "DEATH", world, bx, by, bz, now);
+        trailState.remove(player.getUniqueId()); // 复活后首个移动点立即记录，不被节流吞掉
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -132,7 +133,8 @@ public class PlayerTracker implements Listener {
                 || cause == PlayerTeleportEvent.TeleportCause.END_PORTAL
                 || cause == PlayerTeleportEvent.TeleportCause.END_GATEWAY
                 || cause == PlayerTeleportEvent.TeleportCause.COMMAND
-                || cause == PlayerTeleportEvent.TeleportCause.PLUGIN) {
+                || cause == PlayerTeleportEvent.TeleportCause.PLUGIN
+                || cause == PlayerTeleportEvent.TeleportCause.SPECTATE) {
             Location loc = event.getFrom();
             String world = loc.getWorld().getName();
             int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
@@ -140,6 +142,7 @@ public class PlayerTracker implements Listener {
             // 补记传送前位置轨迹点，使轨迹线延伸到灰点
             todayRecord().addTrail(player.getName(), bx, by, bz, now, world);
             todayRecord().addBreak(player.getName(), "TP", world, bx, by, bz, now);
+            trailState.remove(player.getUniqueId()); // 传送后首个移动点立即记录，不被节流吞掉
         }
     }
 
