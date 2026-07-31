@@ -1,5 +1,6 @@
 package com.mcqqbridge.report;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.World;
 import org.bukkit.block.Biome;
@@ -9,6 +10,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.awt.Color;
@@ -18,8 +20,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -27,9 +31,12 @@ import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 /**
- * 玩家驱动的地形增量渲染器：玩家进服/跑图时后台按区块渲染地形，色块落盘，
- * 内存只保留"已渲染坐标集合"做标记位。日报时按轨迹范围从磁盘读色块拼成底图。
- * 复刻客户端小地图 mod 的"增量渲染+缓存"机制，但持久化到磁盘，重启不丢。
+ * 玩家驱动的地形增量渲染器：玩家进服/跑图时后台按"视距范围"渲染地形，色块+高度落盘，
+ * 内存只保留"已渲染坐标集合"做标记位。日报时按轨迹窗口从磁盘读色块+高度，
+ * 用两遍法做坡度阴影(hillshading)拼成无网格缝的底图。
+ *
+ * 渲染玩家视距范围而非仅踩过的区块：视距内区块 Paper 已加载，getChunkAtAsync 几乎零成本，
+ * 跑图时视距扫过的区域连成实心探索带，自然减少空洞。
  *
  * 线程模型：PlayerMoveEvent/PlayerJoinEvent 在主线程做非阻塞判断与 getChunkAtAsync 发起；
  * 异步加载回调取 ChunkSnapshot 后提交到自有后台单线程渲染+写盘。
@@ -37,11 +44,20 @@ import java.util.stream.Stream;
 public class TerrainTileCache implements Listener {
 
     private static final int TILE_PIXELS = 16;
-    private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES;
+    private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES * 2; // rgb + height
     private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
     private static final int MAX_TERRAIN_SIDE = 4096;
+
     private static final double HEIGHT_MIN = -64.0;
     private static final double HEIGHT_MAX = 200.0;
+    private static final int SEA_LEVEL = 63;
+    private static final double LIGHT_X = -0.7;
+    private static final double LIGHT_Z = -0.7;
+    private static final double HILL_K = 0.015;
+    private static final double SHADE_MIN = 0.6;
+    private static final double SHADE_MAX = 1.4;
+    private static final double BRIGHT_MIN = 0.7;
+    private static final double BRIGHT_MAX = 1.15;
 
     private static final Color C_WATER = new Color(45, 95, 180);
     private static final Color C_SAND = new Color(220, 205, 140);
@@ -65,6 +81,9 @@ public class TerrainTileCache implements Listener {
     private final ExecutorService renderExecutor;
     private final Map<String, Set<Long>> renderedByWorld = new ConcurrentHashMap<>();
     private final Map<String, Set<Long>> pendingByWorld = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastRenderChunk = new ConcurrentHashMap<>();
+
+    private record TileData(int[] rgb, int[] height) {}
 
     public TerrainTileCache(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -94,8 +113,13 @@ public class TerrainTileCache implements Listener {
                     for (Path f : (Iterable<Path>) files::iterator) {
                         Long key = parseTileName(f.getFileName().toString());
                         if (key != null) {
-                            set.add(key);
-                            total++;
+                            try {
+                                if (Files.size(f) >= TILE_BYTES) {
+                                    set.add(key);
+                                    total++;
+                                }
+                            } catch (IOException ignored) {
+                            }
                         }
                     }
                 } catch (IOException e) {
@@ -113,7 +137,13 @@ public class TerrainTileCache implements Listener {
         Player player = event.getPlayer();
         int cx = Math.floorDiv(player.getLocation().getBlockX(), TILE_PIXELS);
         int cz = Math.floorDiv(player.getLocation().getBlockZ(), TILE_PIXELS);
-        ensureRendered(player.getWorld(), cx, cz);
+        long key = pack(cx, cz);
+        Long last = lastRenderChunk.get(player.getUniqueId());
+        if (last != null && last == key) {
+            return; // 同一区块内移动，周围渲染范围未变
+        }
+        lastRenderChunk.put(player.getUniqueId(), key);
+        renderAround(player.getWorld(), cx, cz);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -121,9 +151,19 @@ public class TerrainTileCache implements Listener {
         Player player = event.getPlayer();
         int cx = Math.floorDiv(player.getLocation().getBlockX(), TILE_PIXELS);
         int cz = Math.floorDiv(player.getLocation().getBlockZ(), TILE_PIXELS);
-        World world = player.getWorld();
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
+        lastRenderChunk.put(player.getUniqueId(), pack(cx, cz));
+        renderAround(player.getWorld(), cx, cz);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        lastRenderChunk.remove(event.getPlayer().getUniqueId());
+    }
+
+    private void renderAround(World world, int cx, int cz) {
+        int r = Bukkit.getServer().getViewDistance();
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dz = -r; dz <= r; dz++) {
                 ensureRendered(world, cx + dx, cz + dz);
             }
         }
@@ -151,8 +191,8 @@ public class TerrainTileCache implements Listener {
             }
             renderExecutor.submit(() -> {
                 try {
-                    int[] pixels = renderChunk(snapshot);
-                    writeTile(w, cx, cz, pixels);
+                    TileData tile = renderChunk(snapshot);
+                    writeTile(w, cx, cz, tile);
                     rendered.add(key);
                 } catch (Exception e) {
                     logger.warning("[Terrain] render/write failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
@@ -167,30 +207,35 @@ public class TerrainTileCache implements Listener {
         });
     }
 
-    private int[] renderChunk(ChunkSnapshot snapshot) {
-        int[] pixels = new int[TILE_PIXELS * TILE_PIXELS];
+    private TileData renderChunk(ChunkSnapshot snapshot) {
+        int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
+        int[] height = new int[TILE_PIXELS * TILE_PIXELS];
         for (int lz = 0; lz < TILE_PIXELS; lz++) {
             for (int lx = 0; lx < TILE_PIXELS; lx++) {
                 int h = snapshot.getHighestBlockYAt(lx, lz);
                 Biome biome = snapshot.getBiome(lx, h, lz);
-                Color base = biomeColor(biome);
-                pixels[lz * TILE_PIXELS + lx] = isWater(biome) ? base.getRGB() : shade(base, h).getRGB();
+                int idx = lz * TILE_PIXELS + lx;
+                rgb[idx] = biomeColor(biome).getRGB(); // 基础色，光照在拼图时统一算
+                height[idx] = h;
             }
         }
-        return pixels;
+        return new TileData(rgb, height);
     }
 
-    private void writeTile(String worldName, int cx, int cz, int[] pixels) throws IOException {
+    private void writeTile(String worldName, int cx, int cz, TileData tile) throws IOException {
         Path file = tileFile(worldName, cx, cz);
         Files.createDirectories(file.getParent());
         ByteBuffer bb = ByteBuffer.allocate(TILE_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        for (int v : pixels) {
+        for (int v : tile.rgb) {
+            bb.putInt(v);
+        }
+        for (int v : tile.height) {
             bb.putInt(v);
         }
         Files.write(file, bb.array());
     }
 
-    private int[] readTile(String worldName, int cx, int cz) {
+    private TileData readTile(String worldName, int cx, int cz) {
         Path file = tileFile(worldName, cx, cz);
         if (!Files.isRegularFile(file)) {
             return null;
@@ -198,11 +243,14 @@ public class TerrainTileCache implements Listener {
         try {
             byte[] bytes = Files.readAllBytes(file);
             if (bytes.length < TILE_BYTES) {
-                return null;
+                return null; // 旧格式（无高度）作废
             }
-            int[] pixels = new int[TILE_PIXELS * TILE_PIXELS];
-            ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(pixels);
-            return pixels;
+            ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
+            int[] height = new int[TILE_PIXELS * TILE_PIXELS];
+            bb.asIntBuffer().get(rgb);
+            bb.asIntBuffer().get(height);
+            return new TileData(rgb, height);
         } catch (IOException e) {
             logger.warning("[Terrain] read tile failed for " + worldName + " " + cx + "," + cz + ": " + e.getMessage());
             return null;
@@ -210,8 +258,9 @@ public class TerrainTileCache implements Listener {
     }
 
     /**
-     * 按世界坐标窗口从磁盘拼出底图。win 边长超过上限返回 null（降级，防超大图）。
-     * 缺失/未渲染区块填深色。每区块只读一次文件（局部缓存当前区块色块）。
+     * 按世界坐标窗口从磁盘拼出带坡度阴影的底图。两遍法：先拼 RGB 场+高度场，
+     * 再对高度场做光照卷积乘到 RGB 上，保证坡面明暗连续、无 16 格网格缝。
+     * win 边长超过上限返回 null（降级，防超大图）。缺失/未渲染区块填深色且不参与光照。
      */
     public BufferedImage buildTerrainImage(World overworld, int winMinX, int winMinZ, int winW, int winH) {
         if (winW > MAX_TERRAIN_SIDE || winH > MAX_TERRAIN_SIDE || winW <= 0 || winH <= 0) {
@@ -220,11 +269,15 @@ public class TerrainTileCache implements Listener {
         String w = overworld.getName();
         Set<Long> rendered = renderedByWorld.getOrDefault(w, Set.of());
 
-        BufferedImage img = new BufferedImage(winW, winH, BufferedImage.TYPE_INT_RGB);
+        int n = winW * winH;
+        int[] rgbFlat = new int[n];
+        int[] hFlat = new int[n];
+        Arrays.fill(rgbFlat, MAP_BG_RGB);
+        Arrays.fill(hFlat, SEA_LEVEL);
+
         int lastCx = Integer.MIN_VALUE;
         int lastCz = Integer.MIN_VALUE;
-        int[] cur = null;
-
+        TileData cur = null;
         for (int j = 0; j < winH; j++) {
             int worldZ = winMinZ + j;
             int cz = Math.floorDiv(worldZ, TILE_PIXELS);
@@ -237,11 +290,41 @@ public class TerrainTileCache implements Listener {
                     lastCz = cz;
                     cur = rendered.contains(pack(cx, cz)) ? readTile(w, cx, cz) : null;
                 }
-                int lx = Math.floorMod(worldX, TILE_PIXELS);
-                int rgb = (cur != null) ? cur[lz * TILE_PIXELS + lx] : MAP_BG_RGB;
-                img.setRGB(i, j, rgb);
+                if (cur != null) {
+                    int lx = Math.floorMod(worldX, TILE_PIXELS);
+                    int cidx = lz * TILE_PIXELS + lx;
+                    int idx = j * winW + i;
+                    rgbFlat[idx] = cur.rgb[cidx];
+                    hFlat[idx] = cur.height[cidx];
+                }
             }
         }
+
+        int[] out = new int[n];
+        double heightRange = HEIGHT_MAX - HEIGHT_MIN;
+        for (int j = 0; j < winH; j++) {
+            for (int i = 0; i < winW; i++) {
+                int idx = j * winW + i;
+                int base = rgbFlat[idx];
+                if (base == MAP_BG_RGB) {
+                    out[idx] = MAP_BG_RGB;
+                    continue;
+                }
+                int h = hFlat[idx];
+                int hE = i + 1 < winW ? hFlat[idx + 1] : h;
+                int hW = i - 1 >= 0 ? hFlat[idx - 1] : h;
+                int hS = j + 1 < winH ? hFlat[idx + winW] : h;
+                int hN = j - 1 >= 0 ? hFlat[idx - winW] : h;
+                double slope = (hE - hW) * LIGHT_X + (hS - hN) * LIGHT_Z;
+                double shade = clampD(1.0 + slope * HILL_K, SHADE_MIN, SHADE_MAX);
+                double bright = clampD(BRIGHT_MIN + (BRIGHT_MAX - BRIGHT_MIN) * ((h - HEIGHT_MIN) / heightRange),
+                        BRIGHT_MIN, BRIGHT_MAX);
+                out[idx] = applyFactor(base, shade * bright);
+            }
+        }
+
+        BufferedImage img = new BufferedImage(winW, winH, BufferedImage.TYPE_INT_RGB);
+        img.setRGB(0, 0, winW, winH, out, 0, winW);
         return img;
     }
 
@@ -279,11 +362,6 @@ public class TerrainTileCache implements Listener {
         }
     }
 
-    private static boolean isWater(Biome biome) {
-        String k = biome.getKey().getKey();
-        return k.contains("ocean") || k.contains("river");
-    }
-
     private static Color biomeColor(Biome biome) {
         String k = biome.getKey().getKey();
         if (k.contains("ocean") || k.contains("river")) return C_WATER;
@@ -303,18 +381,18 @@ public class TerrainTileCache implements Listener {
         return C_DEFAULT;
     }
 
-    private static Color shade(Color c, int h) {
-        double t = (h - HEIGHT_MIN) / (HEIGHT_MAX - HEIGHT_MIN);
-        if (t < 0) t = 0;
-        if (t > 1) t = 1;
-        double bright = 0.5 + 0.6 * t; // 0.5 .. 1.1
-        return new Color(
-                clamp((int) (c.getRed() * bright)),
-                clamp((int) (c.getGreen() * bright)),
-                clamp((int) (c.getBlue() * bright)));
+    private static int applyFactor(int rgb, double factor) {
+        int r = clamp((int) (((rgb >> 16) & 0xFF) * factor));
+        int g = clamp((int) (((rgb >> 8) & 0xFF) * factor));
+        int b = clamp((int) ((rgb & 0xFF) * factor));
+        return (r << 16) | (g << 8) | b;
     }
 
     private static int clamp(int v) {
         return Math.max(0, Math.min(255, v));
+    }
+
+    private static double clampD(double v, double min, double max) {
+        return Math.max(min, Math.min(max, v));
     }
 }
