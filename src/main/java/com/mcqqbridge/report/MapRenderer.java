@@ -1,5 +1,6 @@
 package com.mcqqbridge.report;
 
+import com.mcqqbridge.stats.DailyRecord.BreakPoint;
 import com.mcqqbridge.stats.DailyRecord.GameEvent;
 import com.mcqqbridge.stats.DailyRecord.PlayerSnapshot;
 import com.mcqqbridge.stats.DailyRecord.Stay;
@@ -16,6 +17,9 @@ import java.awt.geom.Path2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,6 +51,13 @@ public class MapRenderer {
     private static final Color HEADER_BG = new Color(18, 20, 26);
     private static final Color DEATH_COLOR = new Color(255, 70, 70);
     private static final Color ADVANCE_COLOR = new Color(255, 215, 0);
+    private static final Color JOIN_COLOR = new Color(70, 210, 110);
+    private static final Color QUIT_COLOR = new Color(255, 90, 90);
+    private static final Color REJOIN_COLOR = new Color(255, 200, 40);
+    private static final Color TP_COLOR = new Color(150, 150, 150);
+
+    private static final DateTimeFormatter HM_FORMAT =
+            DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault());
 
     private static final int SEA_LEVEL = 63;
     private static final double SIMPLIFY_EPSILON = 2.0;
@@ -62,20 +73,22 @@ public class MapRenderer {
     }
 
     /**
-     * 计算轨迹/事件的世界坐标窗口（含 padding）。无活动返回 null。
+     * 计算主世界轨迹/事件的世界坐标窗口（含 padding）。无活动返回 null。
      * 返回 {winMinX, winMinZ, winW, winH}，供底图拼接与渲染共用，保证坐标一致。
      */
-    public static int[] computeWindow(Map<String, PlayerSnapshot> snapshots, int padding) {
+    public static int[] computeWindow(Map<String, PlayerSnapshot> snapshots, int padding, String mainWorld) {
         int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
         int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
         boolean any = false;
         for (PlayerSnapshot s : snapshots.values()) {
             for (TrailPoint tp : s.trail()) {
+                if (!mainWorld.equals(tp.world())) continue;
                 minX = Math.min(minX, tp.x()); maxX = Math.max(maxX, tp.x());
                 minZ = Math.min(minZ, tp.z()); maxZ = Math.max(maxZ, tp.z());
                 any = true;
             }
             for (GameEvent ev : s.events()) {
+                if (!mainWorld.equals(ev.world())) continue;
                 minX = Math.min(minX, ev.x()); maxX = Math.max(maxX, ev.x());
                 minZ = Math.min(minZ, ev.z()); maxZ = Math.max(maxZ, ev.z());
                 any = true;
@@ -91,7 +104,8 @@ public class MapRenderer {
         return new int[]{winMinX, winMinZ, winW, winH};
     }
 
-    public byte[] render(Map<String, PlayerSnapshot> snapshots, String date, BufferedImage terrain, int[] win) {
+    public byte[] render(Map<String, PlayerSnapshot> snapshots, String date, BufferedImage terrain, int[] win,
+                         String mainWorld) {
         if (win == null) {
             return null;
         }
@@ -132,45 +146,119 @@ public class MapRenderer {
             BasicStroke trailStroke = new BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
             BasicStroke stayStroke = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
 
-            // 预计算简化轨迹，避免重复
-            Map<String, List<TrailPoint>> simplified = new LinkedHashMap<>();
+            // 预计算主世界分段轨迹（断点切段 + 世界过滤），段内才连线
+            Map<String, List<List<TrailPoint>>> segmentsByPlayer = new LinkedHashMap<>();
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
-                simplified.put(e.getKey(), simplifyTrail(e.getValue().trail(), SIMPLIFY_EPSILON));
+                List<List<TrailPoint>> segments = new ArrayList<>();
+                List<TrailPoint> current = new ArrayList<>();
+                int bi = 0;
+                for (TrailPoint p : e.getValue().trail()) {
+                    boolean cut = !mainWorld.equals(p.world());
+                    if (!cut && bi < e.getValue().breaks().size()) {
+                        while (bi < e.getValue().breaks().size()
+                                && e.getValue().breaks().get(bi).t() <= (current.isEmpty() ? Long.MIN_VALUE : current.get(current.size() - 1).t())) {
+                            bi++;
+                        }
+                        if (bi < e.getValue().breaks().size()
+                                && e.getValue().breaks().get(bi).t() <= p.t()) {
+                            cut = true;
+                        }
+                    }
+                    if (cut) {
+                        if (!current.isEmpty()) {
+                            segments.add(simplifyTrail(current, SIMPLIFY_EPSILON));
+                            current = new ArrayList<>();
+                        }
+                        if (mainWorld.equals(p.world())) {
+                            current.add(p);
+                        }
+                    } else {
+                        current.add(p);
+                    }
+                }
+                if (!current.isEmpty()) {
+                    segments.add(simplifyTrail(current, SIMPLIFY_EPSILON));
+                }
+                segmentsByPlayer.put(e.getKey(), segments);
             }
 
             // Pass 1: 所有玩家的暗色包边
             g.setStroke(casingStroke);
             g.setColor(withAlpha(Color.BLACK, 100));
-            for (List<TrailPoint> trail : simplified.values()) {
-                for (int i = 1; i < trail.size(); i++) {
-                    TrailPoint a = trail.get(i - 1);
-                    TrailPoint b = trail.get(i);
-                    int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
-                    int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
-                    if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
-                    g.drawLine(ax, ay, bx, by);
+            for (List<List<TrailPoint>> segments : segmentsByPlayer.values()) {
+                for (List<TrailPoint> seg : segments) {
+                    for (int i = 1; i < seg.size(); i++) {
+                        TrailPoint a = seg.get(i - 1);
+                        TrailPoint b = seg.get(i);
+                        int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
+                        int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
+                        if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
+                        g.drawLine(ax, ay, bx, by);
+                    }
                 }
             }
 
             // Pass 2: 所有玩家的彩色轨迹（高度→透明度）
             g.setStroke(trailStroke);
-            for (Map.Entry<String, List<TrailPoint>> e : simplified.entrySet()) {
+            for (Map.Entry<String, List<List<TrailPoint>>> e : segmentsByPlayer.entrySet()) {
                 Color c = colors.get(e.getKey());
-                List<TrailPoint> trail = e.getValue();
-                for (int i = 1; i < trail.size(); i++) {
-                    TrailPoint a = trail.get(i - 1);
-                    TrailPoint b = trail.get(i);
-                    int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
-                    int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
-                    if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
-                    g.setColor(withAlpha(c, heightAlpha(b.y())));
-                    g.drawLine(ax, ay, bx, by);
+                for (List<TrailPoint> seg : e.getValue()) {
+                    for (int i = 1; i < seg.size(); i++) {
+                        TrailPoint a = seg.get(i - 1);
+                        TrailPoint b = seg.get(i);
+                        int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
+                        int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
+                        if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
+                        g.setColor(withAlpha(c, heightAlpha(b.y())));
+                        g.drawLine(ax, ay, bx, by);
+                    }
                 }
             }
 
-            // Pass 3: 所有玩家的方向箭头
-            for (Map.Entry<String, List<TrailPoint>> e : simplified.entrySet()) {
-                drawArrows(g, e.getValue(), colors.get(e.getKey()), winMinX, winMinZ, outScale, header);
+            // Pass 3: 所有玩家的方向箭头（段内）
+            for (Map.Entry<String, List<List<TrailPoint>>> e : segmentsByPlayer.entrySet()) {
+                for (List<TrailPoint> seg : e.getValue()) {
+                    drawArrows(g, seg, colors.get(e.getKey()), winMinX, winMinZ, outScale, header);
+                }
+            }
+
+            // 会话标记（登录绿+ / 退出红- / 重登黄菱形 / 传送灰点）
+            Font markerFont = new Font(Font.SANS_SERIF, Font.PLAIN, 8);
+            g.setFont(markerFont);
+            for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
+                List<BreakPoint> breaks = e.getValue().breaks();
+                for (int i = 0; i < breaks.size(); i++) {
+                    BreakPoint b = breaks.get(i);
+                    if (!mainWorld.equals(b.world())) continue;
+                    int px = toPx(b.x(), winMinX, outScale);
+                    int py = toPy(b.z(), winMinZ, outScale, header);
+                    if (px < -20 || px > canvasW + 20 || py < header - 20 || py > totalH + 20) continue;
+
+                    if ("QUIT".equals(b.type())) {
+                        // 检查下一个断点是否为 JOIN 且同点（重登）→ 黄菱形 + 离线分钟数
+                        BreakPoint next = (i + 1 < breaks.size()) ? breaks.get(i + 1) : null;
+                        if (next != null && "JOIN".equals(next.type()) && mainWorld.equals(next.world())) {
+                            int nx = toPx(next.x(), winMinX, outScale);
+                            int ny = toPy(next.z(), winMinZ, outScale, header);
+                            if (Math.hypot(nx - px, ny - py) < 12) {
+                                drawDiamond(g, px, py, REJOIN_COLOR);
+                                long offlineMin = Math.max(0, (next.t() - b.t()) / 60000);
+                                drawOutlinedText(g, offlineMin + "m", px + 6, py - 4, REJOIN_COLOR);
+                                i++; // 跳过已合并的 JOIN
+                                continue;
+                            }
+                        }
+                        drawMinus(g, px, py, QUIT_COLOR);
+                        drawOutlinedText(g, formatHm(b.t()), px + 6, py - 4, QUIT_COLOR);
+                    } else if ("JOIN".equals(b.type())) {
+                        drawPlus(g, px, py, JOIN_COLOR);
+                        drawOutlinedText(g, formatHm(b.t()), px + 6, py - 4, JOIN_COLOR);
+                    } else if ("TP".equals(b.type())) {
+                        g.setColor(TP_COLOR);
+                        g.fillOval(px - 2, py - 2, 4, 4);
+                    }
+                    // DEATH 断点不画标记（红X 已由事件绘制）
+                }
             }
 
             // 停留圈
@@ -190,6 +278,7 @@ public class MapRenderer {
 
             for (PlayerSnapshot s : snapshots.values()) {
                 for (GameEvent ev : s.events()) {
+                    if (!mainWorld.equals(ev.world())) continue;
                     int px = toPx(ev.x(), winMinX, outScale);
                     int py = toPy(ev.z(), winMinZ, outScale, header);
                     if ("death".equals(ev.type())) {
@@ -211,8 +300,14 @@ public class MapRenderer {
             g.setFont(labelFont);
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
                 List<TrailPoint> trail = e.getValue().trail();
-                if (trail.isEmpty()) continue;
-                TrailPoint last = trail.get(trail.size() - 1);
+                TrailPoint last = null;
+                for (int i = trail.size() - 1; i >= 0; i--) {
+                    if (mainWorld.equals(trail.get(i).world())) {
+                        last = trail.get(i);
+                        break;
+                    }
+                }
+                if (last == null) continue;
                 int px = toPx(last.x(), winMinX, outScale) + 4;
                 int py = toPy(last.z(), winMinZ, outScale, header) - 4;
                 drawOutlinedText(g, e.getKey(), px, py, colors.get(e.getKey()));
@@ -336,6 +431,38 @@ public class MapRenderer {
         g.fill(transformed);
         g.setColor(c);
         g.fill(at.createTransformedShape(arrow));
+    }
+
+    // ---- 会话标记 ----
+
+    private void drawPlus(Graphics2D g, int x, int y, Color c) {
+        g.setColor(c);
+        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.drawLine(x - 3, y, x + 3, y);
+        g.drawLine(x, y - 3, x, y + 3);
+    }
+
+    private void drawMinus(Graphics2D g, int x, int y, Color c) {
+        g.setColor(c);
+        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.drawLine(x - 3, y, x + 3, y);
+    }
+
+    private void drawDiamond(Graphics2D g, int x, int y, Color c) {
+        Path2D.Double diamond = new Path2D.Double();
+        diamond.moveTo(x, y - 5);
+        diamond.lineTo(x + 5, y);
+        diamond.lineTo(x, y + 5);
+        diamond.lineTo(x - 5, y);
+        diamond.closePath();
+        g.setColor(Color.BLACK);
+        g.fill(diamond);
+        g.setColor(c);
+        g.fill(diamond);
+    }
+
+    private static String formatHm(long epochMs) {
+        return HM_FORMAT.format(Instant.ofEpochMilli(epochMs));
     }
 
     // ---- 高度→透明度 ----

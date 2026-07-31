@@ -22,13 +22,16 @@ public class DailyRecord {
     // 低于此 Y 坐标视为地下活动（粗略启发式，矿洞/深板岩层基本落在其下）。渲染逐点判断也读此常量。
     public static final int UNDERGROUND_Y = 40;
 
-    public record TrailPoint(int x, int y, int z, long t) {}
+    public record TrailPoint(int x, int y, int z, long t, String world) {}
 
     public record Stay(int x, int z, long startT, long endT, long minutes) {}
 
-    public record GameEvent(String type, int x, int y, int z, long t, String text) {}
+    public record GameEvent(String type, String world, int x, int y, int z, long t, String text) {}
 
     public record ChatLine(long t, String player, String text) {}
+
+    /** 轨迹断点：type 为 JOIN / QUIT / DEATH / TP，用于渲染时切段不连线。 */
+    public record BreakPoint(String type, String world, int x, int y, int z, long t) {}
 
     /** 不可变玩家快照，供渲染与日报文字跨包、跨线程安全使用。 */
     public record PlayerSnapshot(
@@ -39,6 +42,7 @@ public class DailyRecord {
             List<GameEvent> events,
             List<ChatLine> chats,
             List<Stay> stays,
+            List<BreakPoint> breaks,
             int minY,
             int undergroundPoints,
             int surfacePoints) {
@@ -51,6 +55,7 @@ public class DailyRecord {
         final List<TrailPoint> trail = new ArrayList<>();
         final List<GameEvent> events = new ArrayList<>();
         final List<ChatLine> chats = new ArrayList<>();
+        final List<BreakPoint> breaks = new ArrayList<>();
         int minY = Integer.MAX_VALUE;
         int undergroundPoints;
         int surfacePoints;
@@ -71,10 +76,10 @@ public class DailyRecord {
         return players.computeIfAbsent(name, n -> new PlayerData());
     }
 
-    public void addTrail(String name, int x, int y, int z, long t) {
+    public void addTrail(String name, int x, int y, int z, long t, String world) {
         PlayerData d = player(name);
         synchronized (d) {
-            d.trail.add(new TrailPoint(x, y, z, t));
+            d.trail.add(new TrailPoint(x, y, z, t, world));
             if (y < UNDERGROUND_Y) {
                 d.undergroundPoints++;
             } else {
@@ -86,10 +91,17 @@ public class DailyRecord {
         }
     }
 
-    public void addEvent(String name, String type, int x, int y, int z, long t, String text) {
+    public void addBreak(String name, String type, String world, int x, int y, int z, long t) {
         PlayerData d = player(name);
         synchronized (d) {
-            d.events.add(new GameEvent(type, x, y, z, t, text));
+            d.breaks.add(new BreakPoint(type, world, x, y, z, t));
+        }
+    }
+
+    public void addEvent(String name, String type, String world, int x, int y, int z, long t, String text) {
+        PlayerData d = player(name);
+        synchronized (d) {
+            d.events.add(new GameEvent(type, world, x, y, z, t, text));
         }
     }
 
@@ -133,6 +145,7 @@ public class DailyRecord {
                         List.copyOf(d.events),
                         List.copyOf(d.chats),
                         computeStaysLocked(d, stayThresholdMs),
+                        List.copyOf(d.breaks),
                         d.minY == Integer.MAX_VALUE ? 0 : d.minY,
                         d.undergroundPoints,
                         d.surfacePoints));
@@ -165,9 +178,23 @@ public class DailyRecord {
                 o.addProperty("y", tp.y());
                 o.addProperty("z", tp.z());
                 o.addProperty("t", tp.t());
+                o.addProperty("world", tp.world());
                 trailArr.add(o);
             }
             po.add("trail", trailArr);
+
+            JsonArray breaksArr = new JsonArray();
+            for (BreakPoint b : s.breaks()) {
+                JsonObject o = new JsonObject();
+                o.addProperty("type", b.type());
+                o.addProperty("world", b.world());
+                o.addProperty("x", b.x());
+                o.addProperty("y", b.y());
+                o.addProperty("z", b.z());
+                o.addProperty("t", b.t());
+                breaksArr.add(o);
+            }
+            po.add("breaks", breaksArr);
 
             JsonArray staysArr = new JsonArray();
             for (Stay st : s.stays()) {
@@ -185,6 +212,7 @@ public class DailyRecord {
             for (GameEvent ev : s.events()) {
                 JsonObject o = new JsonObject();
                 o.addProperty("type", ev.type());
+                o.addProperty("world", ev.world());
                 o.addProperty("x", ev.x());
                 o.addProperty("y", ev.y());
                 o.addProperty("z", ev.z());

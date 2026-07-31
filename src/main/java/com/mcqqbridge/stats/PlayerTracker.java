@@ -13,6 +13,7 @@ import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.LocalDate;
@@ -65,7 +66,7 @@ public class PlayerTracker implements Listener {
         if (st != null && st.x == bx && st.y == by && st.z == bz) {
             return; // 坐标未变（挂机），不记点，也不刷新 lastRecordT 以累积停留时长
         }
-        todayRecord().addTrail(player.getName(), bx, by, bz, now);
+        todayRecord().addTrail(player.getName(), bx, by, bz, now, loc.getWorld().getName());
         trailState.put(id, new TrailState(now, bx, by, bz));
     }
 
@@ -73,9 +74,13 @@ public class PlayerTracker implements Listener {
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
-        joinTime.put(id, System.currentTimeMillis());
+        long now = System.currentTimeMillis();
+        joinTime.put(id, now);
         statistics.recordBaseline(player);
         trailState.remove(id); // 进服首个移动点立即记录
+        Location loc = player.getLocation();
+        todayRecord().addBreak(player.getName(), "JOIN", loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -91,6 +96,9 @@ public class PlayerTracker implements Listener {
         DailyRecord record = todayRecord();
         delta.forEach((s, v) -> record.addStat(player.getName(), s.name(), v));
         trailState.remove(id);
+        Location loc = player.getLocation();
+        record.addBreak(player.getName(), "QUIT", loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -101,8 +109,26 @@ public class PlayerTracker implements Listener {
                 ? ""
                 : PlainTextComponentSerializer.plainText().serialize(event.deathMessage());
         long now = System.currentTimeMillis();
-        todayRecord().addEvent(player.getName(), "death",
+        DailyRecord record = todayRecord();
+        record.addEvent(player.getName(), "death", loc.getWorld().getName(),
                 loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now, text);
+        record.addBreak(player.getName(), "DEATH", loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onTeleport(PlayerTeleportEvent event) {
+        Player player = event.getPlayer();
+        PlayerTeleportEvent.TeleportCause cause = event.getCause();
+        if (cause == PlayerTeleportEvent.TeleportCause.NETHER_PORTAL
+                || cause == PlayerTeleportEvent.TeleportCause.END_PORTAL
+                || cause == PlayerTeleportEvent.TeleportCause.END_GATEWAY
+                || cause == PlayerTeleportEvent.TeleportCause.COMMAND
+                || cause == PlayerTeleportEvent.TeleportCause.PLUGIN) {
+            Location loc = event.getFrom();
+            todayRecord().addBreak(player.getName(), "TP", loc.getWorld().getName(),
+                    loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), System.currentTimeMillis());
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -115,7 +141,7 @@ public class PlayerTracker implements Listener {
         Location loc = player.getLocation();
         String title = PlainTextComponentSerializer.plainText().serialize(display.title());
         long now = System.currentTimeMillis();
-        todayRecord().addEvent(player.getName(), "advancement",
+        todayRecord().addEvent(player.getName(), "advancement", loc.getWorld().getName(),
                 loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now, title);
     }
 

@@ -162,19 +162,19 @@ public class DailyReportScheduler {
         String text = formatter.format(data, record.getDate());
         qqClient.sendGroupMessage(gid, text);
 
-        int[] win = MapRenderer.computeWindow(snap, config.getMapPadding());
+        World overworld = Bukkit.getWorlds().stream()
+                .filter(w -> w.getEnvironment() == World.Environment.NORMAL)
+                .findFirst().orElse(null);
+        String mainWorld = overworld == null ? null : overworld.getName();
+
+        int[] win = overworld == null ? null : MapRenderer.computeWindow(snap, config.getMapPadding(), mainWorld);
         BufferedImage terrain = null;
-        if (win != null && terrainCache != null) {
-            World overworld = Bukkit.getWorlds().stream()
-                    .filter(w -> w.getEnvironment() == World.Environment.NORMAL)
-                    .findFirst().orElse(null);
-            if (overworld != null) {
-                terrain = terrainCache.buildTerrainImage(overworld, win[0], win[1], win[2], win[3]);
-            }
+        if (win != null && terrainCache != null && overworld != null) {
+            terrain = terrainCache.buildTerrainImage(overworld, win[0], win[1], win[2], win[3]);
             logger.info("[Report] terrain tiles on disk: " + terrainCache.tileCount());
         }
 
-        byte[] png = renderer.render(snap, record.getDate(), terrain, win);
+        byte[] png = renderer.render(snap, record.getDate(), terrain, win, mainWorld);
         if (png != null) {
             qqClient.sendGroupImage(gid, png);
         } else {
