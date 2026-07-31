@@ -11,19 +11,20 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Path2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
 
-import static com.mcqqbridge.stats.DailyRecord.UNDERGROUND_Y;
-
 /**
  * 将当日轨迹/事件渲染为 PNG 探索地图，叠加在调用方提供的地形底图上。
- * 底图由 TerrainTileCache 按轨迹窗口从磁盘拼出（每格1像素，尺寸=窗口格数）；底图为 null 时降级为纯色背景。
+ * 底图由 TerrainTileCache 按轨迹窗口从磁盘拼出；底图为 null 时降级为纯色背景。
  * 矢量叠加（轨迹/停留/事件/标签/标题/图例）与底图来源无关。渲染须在异步线程调用（含 AWT 绘制）。
  */
 public class MapRenderer {
@@ -46,6 +47,11 @@ public class MapRenderer {
     private static final Color HEADER_BG = new Color(18, 20, 26);
     private static final Color DEATH_COLOR = new Color(255, 70, 70);
     private static final Color ADVANCE_COLOR = new Color(255, 215, 0);
+
+    private static final int SEA_LEVEL = 63;
+    private static final double SIMPLIFY_EPSILON = 2.0;
+    private static final double ARROW_INTERVAL_PX = 50.0;
+    private static final double MIN_SEGMENT_PX = 1.0;
 
     private final int maxWidth;
     private final int padding;
@@ -122,25 +128,43 @@ public class MapRenderer {
                 colors.put(name, PALETTE[idx++ % PALETTE.length]);
             }
 
-            BasicStroke solid = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
-            BasicStroke dashed = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
-                    10f, new float[]{4f, 4f}, 0f);
+            BasicStroke casingStroke = new BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+            BasicStroke trailStroke = new BasicStroke(2.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
 
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
                 Color c = colors.get(e.getKey());
                 PlayerSnapshot s = e.getValue();
-                List<TrailPoint> trail = s.trail();
+                List<TrailPoint> trail = simplifyTrail(s.trail(), SIMPLIFY_EPSILON);
 
+                // 第一层：暗色包边
+                g.setStroke(casingStroke);
                 for (int i = 1; i < trail.size(); i++) {
                     TrailPoint a = trail.get(i - 1);
                     TrailPoint b = trail.get(i);
-                    boolean underground = b.y() < UNDERGROUND_Y;
-                    g.setStroke(underground ? dashed : solid);
-                    g.setColor(underground ? withAlpha(c, 150) : c);
-                    g.drawLine(toPx(a.x(), winMinX, outScale), toPy(a.z(), winMinZ, outScale, header),
-                            toPx(b.x(), winMinX, outScale), toPy(b.z(), winMinZ, outScale, header));
+                    int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
+                    int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
+                    if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
+                    g.setColor(withAlpha(Color.BLACK, 100));
+                    g.drawLine(ax, ay, bx, by);
                 }
 
+                // 第二层：彩色轨迹（高度→透明度）
+                g.setStroke(trailStroke);
+                for (int i = 1; i < trail.size(); i++) {
+                    TrailPoint a = trail.get(i - 1);
+                    TrailPoint b = trail.get(i);
+                    int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
+                    int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
+                    if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
+                    g.setColor(withAlpha(c, heightAlpha(b.y())));
+                    g.drawLine(ax, ay, bx, by);
+                }
+
+                // 方向箭头
+                drawArrows(g, trail, c, winMinX, winMinZ, outScale, header);
+
+                // 停留圈
+                BasicStroke stayStroke = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
                 for (Stay st : s.stays()) {
                     int r = clamp(3 + (int) (st.minutes() / 2), 3, 14);
                     int cx = toPx(st.x(), winMinX, outScale);
@@ -148,7 +172,7 @@ public class MapRenderer {
                     g.setColor(withAlpha(c, 70));
                     g.fillOval(cx - r, cy - r, r * 2, r * 2);
                     g.setColor(c);
-                    g.setStroke(solid);
+                    g.setStroke(stayStroke);
                     g.drawOval(cx - r, cy - r, r * 2, r * 2);
                 }
             }
@@ -166,7 +190,7 @@ public class MapRenderer {
                         g.setColor(ADVANCE_COLOR);
                         g.fillOval(px - 4, py - 4, 8, 8);
                         g.setColor(Color.BLACK);
-                        g.setStroke(solid);
+                        g.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                         g.drawOval(px - 4, py - 4, 8, 8);
                     }
                 }
@@ -209,12 +233,124 @@ public class MapRenderer {
         }
     }
 
+    // ---- 轨迹简化 (Douglas-Peucker, XZ 平面) ----
+
+    private static List<TrailPoint> simplifyTrail(List<TrailPoint> trail, double epsilon) {
+        if (trail.size() <= 2) {
+            return trail;
+        }
+        boolean[] keep = new boolean[trail.size()];
+        keep[0] = true;
+        keep[trail.size() - 1] = true;
+        douglasPeucker(trail, 0, trail.size() - 1, epsilon, keep);
+        List<TrailPoint> result = new ArrayList<>();
+        for (int i = 0; i < trail.size(); i++) {
+            if (keep[i]) {
+                result.add(trail.get(i));
+            }
+        }
+        return result;
+    }
+
+    private static void douglasPeucker(List<TrailPoint> pts, int start, int end, double eps, boolean[] keep) {
+        if (end - start < 2) {
+            return;
+        }
+        double maxDist = 0;
+        int maxIdx = start;
+        double ax = pts.get(start).x(), az = pts.get(start).z();
+        double bx = pts.get(end).x(), bz = pts.get(end).z();
+        double dx = bx - ax, dz = bz - az;
+        double lenSq = dx * dx + dz * dz;
+
+        for (int i = start + 1; i < end; i++) {
+            double px = pts.get(i).x(), pz = pts.get(i).z();
+            double dist;
+            if (lenSq == 0) {
+                dist = Math.hypot(px - ax, pz - az);
+            } else {
+                double cross = Math.abs((px - ax) * dz - (pz - az) * dx);
+                dist = cross / Math.sqrt(lenSq);
+            }
+            if (dist > maxDist) {
+                maxDist = dist;
+                maxIdx = i;
+            }
+        }
+        if (maxDist > eps) {
+            keep[maxIdx] = true;
+            douglasPeucker(pts, start, maxIdx, eps, keep);
+            douglasPeucker(pts, maxIdx, end, eps, keep);
+        }
+    }
+
+    // ---- 方向箭头 ----
+
+    private void drawArrows(Graphics2D g, List<TrailPoint> trail, Color c,
+                            int winMinX, int winMinZ, double outScale, int header) {
+        if (trail.size() < 2) return;
+        double accumulated = 0;
+        for (int i = 1; i < trail.size(); i++) {
+            TrailPoint a = trail.get(i - 1);
+            TrailPoint b = trail.get(i);
+            int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
+            int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
+            double segLen = screenDist(ax, ay, bx, by);
+            if (segLen < MIN_SEGMENT_PX) continue;
+
+            accumulated += segLen;
+            if (accumulated >= ARROW_INTERVAL_PX) {
+                accumulated -= ARROW_INTERVAL_PX;
+                double angle = Math.atan2(by - ay, bx - ax);
+                int mx = (ax + bx) / 2, my = (ay + by) / 2;
+                drawArrow(g, mx, my, angle, c);
+            }
+        }
+    }
+
+    private void drawArrow(Graphics2D g, int x, int y, double angle, Color c) {
+        Path2D.Double arrow = new Path2D.Double();
+        arrow.moveTo(5, 0);
+        arrow.lineTo(-3, -3.5);
+        arrow.lineTo(-1.5, 0);
+        arrow.lineTo(-3, 3.5);
+        arrow.closePath();
+
+        AffineTransform at = AffineTransform.getTranslateInstance(x, y);
+        at.rotate(angle);
+        Path2D.Double transformed = (Path2D.Double) arrow.clone();
+        transformed.transform(at);
+
+        g.setColor(Color.BLACK);
+        g.fill(transformed);
+        g.setColor(c);
+        g.fill(at.createTransformedShape(arrow));
+    }
+
+    // ---- 高度→透明度 ----
+
+    private static int heightAlpha(int y) {
+        double alpha;
+        if (y < SEA_LEVEL) {
+            alpha = 210 + (y - SEA_LEVEL) * 1.26;
+        } else {
+            alpha = 210 + (y - SEA_LEVEL) * 0.33;
+        }
+        return (int) Math.round(Math.max(50, Math.min(255, alpha)));
+    }
+
+    // ---- 工具方法 ----
+
     private int toPx(int worldX, int winMinX, double outScale) {
         return (int) Math.round((worldX - winMinX) * outScale);
     }
 
     private int toPy(int worldZ, int winMinZ, double outScale, int header) {
         return header + (int) Math.round((worldZ - winMinZ) * outScale);
+    }
+
+    private static double screenDist(int ax, int ay, int bx, int by) {
+        return Math.hypot(bx - ax, by - ay);
     }
 
     private void drawOutlinedText(Graphics2D g, String text, int x, int y, Color color) {
