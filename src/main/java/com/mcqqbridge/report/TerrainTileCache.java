@@ -18,6 +18,7 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -238,13 +239,13 @@ public class TerrainTileCache implements Listener {
             if (bytes.length < TILE_BYTES) {
                 return null; // 旧格式（无高度）作废
             }
-            ByteBuffer bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            IntBuffer ib = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
             int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
             int[] height = new int[TILE_PIXELS * TILE_PIXELS];
             int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS];
-            bb.asIntBuffer().get(rgb);
-            bb.asIntBuffer().get(height);
-            bb.asIntBuffer().get(waterDepth);
+            ib.get(rgb);
+            ib.get(height);
+            ib.get(waterDepth);
             return new TileData(rgb, height, waterDepth);
         } catch (IOException e) {
             logger.warning("[Terrain] read tile failed for " + worldName + " " + cx + "," + cz + ": " + e.getMessage());
