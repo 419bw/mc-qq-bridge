@@ -128,28 +128,35 @@ public class MapRenderer {
                 colors.put(name, PALETTE[idx++ % PALETTE.length]);
             }
 
-            BasicStroke casingStroke = new BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
-            BasicStroke trailStroke = new BasicStroke(2.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+            BasicStroke casingStroke = new BasicStroke(5.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+            BasicStroke trailStroke = new BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+            BasicStroke stayStroke = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
 
+            // 预计算简化轨迹，避免重复
+            Map<String, List<TrailPoint>> simplified = new LinkedHashMap<>();
             for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
-                Color c = colors.get(e.getKey());
-                PlayerSnapshot s = e.getValue();
-                List<TrailPoint> trail = simplifyTrail(s.trail(), SIMPLIFY_EPSILON);
+                simplified.put(e.getKey(), simplifyTrail(e.getValue().trail(), SIMPLIFY_EPSILON));
+            }
 
-                // 第一层：暗色包边
-                g.setStroke(casingStroke);
+            // Pass 1: 所有玩家的暗色包边
+            g.setStroke(casingStroke);
+            g.setColor(withAlpha(Color.BLACK, 100));
+            for (List<TrailPoint> trail : simplified.values()) {
                 for (int i = 1; i < trail.size(); i++) {
                     TrailPoint a = trail.get(i - 1);
                     TrailPoint b = trail.get(i);
                     int ax = toPx(a.x(), winMinX, outScale), ay = toPy(a.z(), winMinZ, outScale, header);
                     int bx = toPx(b.x(), winMinX, outScale), by = toPy(b.z(), winMinZ, outScale, header);
                     if (screenDist(ax, ay, bx, by) < MIN_SEGMENT_PX) continue;
-                    g.setColor(withAlpha(Color.BLACK, 100));
                     g.drawLine(ax, ay, bx, by);
                 }
+            }
 
-                // 第二层：彩色轨迹（高度→透明度）
-                g.setStroke(trailStroke);
+            // Pass 2: 所有玩家的彩色轨迹（高度→透明度）
+            g.setStroke(trailStroke);
+            for (Map.Entry<String, List<TrailPoint>> e : simplified.entrySet()) {
+                Color c = colors.get(e.getKey());
+                List<TrailPoint> trail = e.getValue();
                 for (int i = 1; i < trail.size(); i++) {
                     TrailPoint a = trail.get(i - 1);
                     TrailPoint b = trail.get(i);
@@ -159,13 +166,17 @@ public class MapRenderer {
                     g.setColor(withAlpha(c, heightAlpha(b.y())));
                     g.drawLine(ax, ay, bx, by);
                 }
+            }
 
-                // 方向箭头
-                drawArrows(g, trail, c, winMinX, winMinZ, outScale, header);
+            // Pass 3: 所有玩家的方向箭头
+            for (Map.Entry<String, List<TrailPoint>> e : simplified.entrySet()) {
+                drawArrows(g, e.getValue(), colors.get(e.getKey()), winMinX, winMinZ, outScale, header);
+            }
 
-                // 停留圈
-                BasicStroke stayStroke = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
-                for (Stay st : s.stays()) {
+            // 停留圈
+            for (Map.Entry<String, PlayerSnapshot> e : snapshots.entrySet()) {
+                Color c = colors.get(e.getKey());
+                for (Stay st : e.getValue().stays()) {
                     int r = clamp(3 + (int) (st.minutes() / 2), 3, 14);
                     int cx = toPx(st.x(), winMinX, outScale);
                     int cy = toPy(st.z(), winMinZ, outScale, header);
@@ -310,10 +321,10 @@ public class MapRenderer {
 
     private void drawArrow(Graphics2D g, int x, int y, double angle, Color c) {
         Path2D.Double arrow = new Path2D.Double();
-        arrow.moveTo(5, 0);
-        arrow.lineTo(-3, -3.5);
-        arrow.lineTo(-1.5, 0);
-        arrow.lineTo(-3, 3.5);
+        arrow.moveTo(8, 0);
+        arrow.lineTo(-4, -5);
+        arrow.lineTo(-2, 0);
+        arrow.lineTo(-4, 5);
         arrow.closePath();
 
         AffineTransform at = AffineTransform.getTranslateInstance(x, y);
