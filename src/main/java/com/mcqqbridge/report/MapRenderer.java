@@ -156,11 +156,11 @@ public class MapRenderer {
                     boolean cut = !mainWorld.equals(p.world());
                     if (!cut && bi < e.getValue().breaks().size()) {
                         while (bi < e.getValue().breaks().size()
-                                && e.getValue().breaks().get(bi).t() <= (current.isEmpty() ? Long.MIN_VALUE : current.get(current.size() - 1).t())) {
+                                && e.getValue().breaks().get(bi).t() < (current.isEmpty() ? Long.MIN_VALUE : current.get(current.size() - 1).t())) {
                             bi++;
                         }
                         if (bi < e.getValue().breaks().size()
-                                && e.getValue().breaks().get(bi).t() <= p.t()) {
+                                && e.getValue().breaks().get(bi).t() < p.t()) {
                             cut = true;
                         }
                     }

@@ -97,8 +97,11 @@ public class PlayerTracker implements Listener {
         delta.forEach((s, v) -> record.addStat(player.getName(), s.name(), v));
         trailState.remove(id);
         Location loc = player.getLocation();
-        record.addBreak(player.getName(), "QUIT", loc.getWorld().getName(),
-                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
+        String world = loc.getWorld().getName();
+        int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+        // 补记退出位置轨迹点，避免轨迹线末端与 QUIT 标记之间割裂
+        record.addTrail(player.getName(), bx, by, bz, now, world);
+        record.addBreak(player.getName(), "QUIT", world, bx, by, bz, now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -110,10 +113,12 @@ public class PlayerTracker implements Listener {
                 : PlainTextComponentSerializer.plainText().serialize(event.deathMessage());
         long now = System.currentTimeMillis();
         DailyRecord record = todayRecord();
-        record.addEvent(player.getName(), "death", loc.getWorld().getName(),
-                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now, text);
-        record.addBreak(player.getName(), "DEATH", loc.getWorld().getName(),
-                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ(), now);
+        String world = loc.getWorld().getName();
+        int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+        // 补记死亡位置轨迹点，使轨迹线延伸到红X 处
+        record.addTrail(player.getName(), bx, by, bz, now, world);
+        record.addEvent(player.getName(), "death", world, bx, by, bz, now, text);
+        record.addBreak(player.getName(), "DEATH", world, bx, by, bz, now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
