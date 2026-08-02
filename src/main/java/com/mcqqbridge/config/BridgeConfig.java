@@ -13,16 +13,16 @@ public class BridgeConfig {
 
     private final JavaPlugin plugin;
 
-    private boolean mcToQq;
-    private boolean qqToMc;
-    private String mcFormat;
-    private String qqFormat;
-    private BridgeMode mode;
+    private volatile boolean mcToQq;
+    private volatile boolean qqToMc;
+    private volatile String mcFormat;
+    private volatile String qqFormat;
+    private volatile BridgeMode mode;
     private String appId;
     private String appSecret;
     private final AtomicReference<String> groupOpenId = new AtomicReference<>("");
 
-    private boolean reportEnabled;
+    private volatile boolean reportEnabled;
     private int reportHour;
     private int reportMinute;
     private int retentionDays;

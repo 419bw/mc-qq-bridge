@@ -50,10 +50,6 @@ public class StatisticsSnapshot {
         return delta(player, base);
     }
 
-    public void discard(UUID playerId) {
-        baselines.remove(playerId);
-    }
-
     private Map<Statistic, Integer> delta(Player player, Map<Statistic, Integer> base) {
         Map<Statistic, Integer> result = new EnumMap<>(Statistic.class);
         if (base == null) {

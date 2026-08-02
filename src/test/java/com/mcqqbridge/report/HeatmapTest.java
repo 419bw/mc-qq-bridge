@@ -4,24 +4,22 @@ import com.mcqqbridge.stats.DailyRecord;
 import com.mcqqbridge.stats.DailyRecord.*;
 
 import javax.imageio.ImageIO;
-import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 
 /**
- * 独立测试入口：读取日报 JSON + 本地地形瓦片，调用 MapRenderer 渲染热力图并输出 PNG。
- * 不依赖 Bukkit / Gson，仅 JDK。用完即删。
+ * 独立测试入口：读取日报 JSON + 本地地形瓦片，调用 MapRenderer 渲染探索地图并输出 PNG。
+ * 不依赖 Bukkit / Gson，仅 JDK + TileCodec（纯 JDK）。
  *
- * 用法: java com.mcqqbridge.report.HeatmapTest <json> <tilesDir> <output.png>
+ * 用法: java com.mcqqbridge.report.HeatmapTest <json> <tilesDir> <output.png> [worldName] [titleSuffix]
  */
 public class HeatmapTest {
+
+    /** 本地下界阴影敏感度（服务器 TerrainTileCache 暂为 0.4，本地验证 1.0 效果更好，待同步）。 */
+    private static final double LOCAL_NETHER_SHADE_SENSITIVITY = 1.0;
 
     // ================================================================
     //  极简 JSON 解析器（递归下降，仅覆盖本项目 JSON 结构）
@@ -210,116 +208,6 @@ public class HeatmapTest {
     }
 
     // ================================================================
-    //  地形瓦片读取 + hillshading（从 TerrainTileCache 提取，不依赖 Bukkit）
-    // ================================================================
-
-    private static final int TILE_PX = 16;
-    private static final int TILE_BYTES = TILE_PX * TILE_PX * Integer.BYTES * 3;
-    private static final int TILE_MODE_BYTES = Integer.BYTES; // 瓦片文件头：渲染模式（与 TerrainTileCache 一致）
-    private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
-    private static final int SEA_LEVEL = 63;
-    private static final int WATER_BASE_RGB = 0x4040FF;
-    private static final int MAX_SIDE = 4096;
-    private static final double NETHER_SHADE_SENSITIVITY = 0.4; // 与 TerrainTileCache 一致
-
-    private record TileData(int[] rgb, int[] height, int[] waterDepth) {}
-
-    private static TileData readTile(Path dir, int cx, int cz, int expectedMode) {
-        Path f = dir.resolve("c" + cx + "z" + cz + ".bin");
-        if (!Files.isRegularFile(f)) return null;
-        try {
-            byte[] bytes = Files.readAllBytes(f);
-            boolean hasHeader = bytes.length >= TILE_BYTES + TILE_MODE_BYTES;
-            if (!hasHeader) {
-                if (bytes.length < TILE_BYTES) return null;
-                if (expectedMode != 0) return null; // 无头旧文件 = 模式 0，下界期望 1 → 作废（与服务器 scanDisk 一致）
-            } else {
-                int mode = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
-                if (mode != expectedMode) return null;
-            }
-            int off = hasHeader ? TILE_MODE_BYTES : 0;
-            IntBuffer ib = ByteBuffer.wrap(bytes, off, bytes.length - off).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
-            int[] rgb = new int[256], h = new int[256], w = new int[256];
-            ib.get(rgb); ib.get(h); ib.get(w);
-            return new TileData(rgb, h, w);
-        } catch (IOException e) { return null; }
-    }
-
-    private static BufferedImage buildTerrain(Path tilesDir, String world,
-                                               int winMinX, int winMinZ, int winW, int winH) {
-        double shadeSensitivity = world.contains("nether") ? NETHER_SHADE_SENSITIVITY : 4.0;
-        int expectedMode = world.contains("nether") ? 1 : 0;
-        if (winW <= 0 || winH <= 0) return null;
-        Path worldDir = tilesDir.resolve(world);
-        if (!Files.isDirectory(worldDir)) return null;
-
-        int step = 1;
-        while (winW / step > MAX_SIDE || winH / step > MAX_SIDE) step <<= 1;
-        int outW = (winW + step - 1) / step;
-        int outH = (winH + step - 1) / step;
-
-        int n = outW * outH;
-        int[] rgbF = new int[n], hF = new int[n], wF = new int[n];
-        Arrays.fill(rgbF, MAP_BG_RGB);
-        Arrays.fill(hF, SEA_LEVEL);
-
-        int lastCx = Integer.MIN_VALUE, lastCz = Integer.MIN_VALUE;
-        TileData cur = null;
-        for (int j = 0; j < outH; j++) {
-            int wz = winMinZ + j * step + step / 2;
-            int cz = Math.floorDiv(wz, TILE_PX);
-            int lz = Math.floorMod(wz, TILE_PX);
-            for (int i = 0; i < outW; i++) {
-                int wx = winMinX + i * step + step / 2;
-                int cx = Math.floorDiv(wx, TILE_PX);
-                if (cx != lastCx || cz != lastCz) {
-                    lastCx = cx; lastCz = cz;
-                    cur = readTile(worldDir, cx, cz, expectedMode);
-                }
-                if (cur != null) {
-                    int lx = Math.floorMod(wx, TILE_PX);
-                    int ci = lz * TILE_PX + lx;
-                    int idx = j * outW + i;
-                    rgbF[idx] = cur.rgb[ci]; hF[idx] = cur.height[ci]; wF[idx] = cur.waterDepth[ci];
-                }
-            }
-        }
-
-        int[] out = new int[n];
-        for (int j = 0; j < outH; j++) {
-            for (int i = 0; i < outW; i++) {
-                int idx = j * outW + i;
-                int base = rgbF[idx];
-                if (base == MAP_BG_RGB) { out[idx] = MAP_BG_RGB; continue; }
-                int parity = (i + j) & 1;
-                int shade;
-                if (base == WATER_BASE_RGB) {
-                    double d2 = wF[idx] * 0.1 + parity * 0.2;
-                    shade = d2 < 0.5 ? 2 : d2 > 0.9 ? 0 : 1;
-                } else {
-                    int h = hF[idx];
-                    int hN = j > 0 ? hF[idx - outW] : 0;
-                    double d2 = (h - hN) * shadeSensitivity / (step * 5.0) + (parity - 0.5) * 0.4;
-                    shade = d2 > 0.6 ? 2 : d2 < -0.6 ? 0 : 1;
-                }
-                out[idx] = applyShade(base, shade);
-            }
-        }
-
-        BufferedImage img = new BufferedImage(outW, outH, BufferedImage.TYPE_INT_RGB);
-        img.setRGB(0, 0, outW, outH, out, 0, outW);
-        return img;
-    }
-
-    private static int applyShade(int base, int shade) {
-        int mult = switch (shade) { case 0 -> 180; case 2 -> 255; case 3 -> 135; default -> 220; };
-        int r = ((base >> 16) & 0xFF) * mult / 255;
-        int g = ((base >> 8) & 0xFF) * mult / 255;
-        int b = (base & 0xFF) * mult / 255;
-        return (r << 16) | (g << 8) | b;
-    }
-
-    // ================================================================
     //  main
     // ================================================================
 
@@ -354,7 +242,14 @@ public class HeatmapTest {
         }
         System.out.printf("Window: [%d, %d] %d x %d%n", win[0], win[1], win[2], win[3]);
 
-        BufferedImage terrain = buildTerrain(Path.of(tilesDir), worldName, win[0], win[1], win[2], win[3]);
+        boolean isNether = worldName.contains("nether");
+        int expectedMode = isNether ? TileCodec.MODE_CAVE : TileCodec.MODE_SURFACE;
+        double shadeSensitivity = isNether ? LOCAL_NETHER_SHADE_SENSITIVITY : TileCodec.SHADE_SENSITIVITY;
+        Path worldDir = Path.of(tilesDir).resolve(worldName);
+
+        BufferedImage terrain = TileCodec.buildTerrainImage(win[0], win[1], win[2], win[3],
+                shadeSensitivity,
+                (cx, cz) -> TileCodec.readTile(worldDir.resolve(TileCodec.tileFileName(cx, cz)), expectedMode));
         System.out.println("Terrain: " + (terrain != null ? terrain.getWidth() + "x" + terrain.getHeight() : "null"));
 
         MapRenderer renderer = new MapRenderer(maxWidth, mapPadding);

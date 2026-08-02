@@ -49,7 +49,7 @@ public class DataStore {
         Files.createDirectories(dir);
         String date = record.getDate();
         Path file = dir.resolve(date + ".json");
-        String json = gson.toJson(record.toJsonObject(stayThresholdMs));
+        String json = gson.toJson(DailyRecordSerializer.toJsonObject(record, stayThresholdMs));
         Path tmp = dir.resolve(date + ".json.tmp");
         Files.writeString(tmp, json, StandardCharsets.UTF_8);
         Path bak = dir.resolve(date + ".json.bak");
@@ -73,7 +73,7 @@ public class DataStore {
         try {
             String json = Files.readString(file, StandardCharsets.UTF_8);
             JsonObject root = JsonParser.parseString(json).getAsJsonObject();
-            return DailyRecord.fromJson(root);
+            return DailyRecordSerializer.fromJson(root);
         } catch (Exception e) {
             logger.warning("[DataStore] load failed for " + date + ": " + e.getMessage());
             return null;

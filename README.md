@@ -54,7 +54,7 @@ MC 服务器 <-> QQ 群双向聊天互通插件（Paper），基于 QQ 官方机
 
 ```bash
 mvn package
-# 产物: target/mc-qq-bridge-1.0.0.jar
+# 产物: target/mc-qq-bridge-1.1.0.jar
 ```
 
 ## 部署
@@ -120,4 +120,6 @@ report:
 - 断线重连带指数退避（5s 起，最大 60s）
 - Token 自动刷新（提前 60 秒过期）
 - 代码按职责分包：`qq/`（QQ 通信）、`bridge/`（聊天桥接）、`stats/`（数据采集+落盘）、`report/`（渲染+定时+文字）、`command/`（指令）、`config/`（配置）；记录与互通在代码上分离，但同属一个 jar、共享一个 QQ 连接（不拆双插件，因 QQ 一个机器人只允许一个 WebSocket 会话）
+- 瓦片格式常量、二进制读写、hillshading 底图合成统一在 `report/TileCodec`（纯 JDK 无 Bukkit），服务端 `TerrainTileCache` 与离线验证工具 `HeatmapTest`（src/test）共用，保证格式与算法单一定义
+- 数据模型 `DailyRecord` 与序列化 `DailyRecordSerializer` 分离，模型类不承担 JSON 职责
 - 采集与桥接关注点分离：数据采集不受桥接模式（chat/full）影响，始终记录

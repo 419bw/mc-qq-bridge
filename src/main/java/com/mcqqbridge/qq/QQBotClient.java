@@ -37,14 +37,11 @@ public class QQBotClient {
     private volatile int lastSeq;
     private volatile boolean running;
     private volatile String cachedGatewayUrl;
+    private volatile java.util.concurrent.ScheduledFuture<?> heartbeatTask;
     private int consecutiveErrors;
 
     private Consumer<QQGroupMessage> onGroupMessage;
     private Consumer<String> onGroupOpenIdDetected;
-
-    private volatile String lastMsgId = "";
-    private volatile String lastEventId = "";
-    private volatile int msgSeq = 0;
 
     public QQBotClient(String appId, String appSecret, Logger logger) {
         this.appId = appId;
@@ -75,6 +72,7 @@ public class QQBotClient {
 
     public void stop() {
         running = false;
+        cancelHeartbeat();
         if (webSocket != null) {
             webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "shutdown");
         }
@@ -194,6 +192,7 @@ public class QQBotClient {
             public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
                 logger.info("[QQBot] WebSocket closed: " + statusCode + " " + reason);
                 webSocket = null;
+                cancelHeartbeat();
                 closeFuture.complete(null);
                 return null;
             }
@@ -202,6 +201,7 @@ public class QQBotClient {
             public void onError(WebSocket ws, Throwable error) {
                 logger.warning("[QQBot] WebSocket error: " + error.getMessage());
                 webSocket = null;
+                cancelHeartbeat();
                 closeFuture.complete(null);
             }
 
@@ -243,7 +243,6 @@ public class QQBotClient {
                 } else if ("GROUP_AT_MESSAGE_CREATE".equals(event) || "GROUP_MESSAGE_CREATE".equals(event)) {
                     String groupOpenId = d.has("group_openid") ? d.get("group_openid").getAsString() : "";
                     String content = d.has("content") ? d.get("content").getAsString() : "";
-                    int msgType = d.has("message_type") ? d.get("message_type").getAsInt() : 0;
                     String nickname = "Unknown";
                     if (d.has("author")) {
                         JsonObject author = d.getAsJsonObject("author");
@@ -274,9 +273,22 @@ public class QQBotClient {
                     }
                 }
             }
-        }).thenAccept(ws -> wsRef.set(ws));
+        }).thenAccept(ws -> wsRef.set(ws))
+          .exceptionally(ex -> {
+              logger.warning("[QQBot] WebSocket build failed: " + ex.getMessage());
+              closeFuture.complete(null);
+              return null;
+          });
 
         return closeFuture;
+    }
+
+    private void cancelHeartbeat() {
+        java.util.concurrent.ScheduledFuture<?> task = heartbeatTask;
+        if (task != null) {
+            task.cancel(false);
+            heartbeatTask = null;
+        }
     }
 
     private void sendIdentify(WebSocket ws) {
@@ -303,7 +315,8 @@ public class QQBotClient {
     }
 
     private void startHeartbeat(WebSocket ws, int intervalSec) {
-        scheduler.scheduleAtFixedRate(() -> {
+        cancelHeartbeat();
+        heartbeatTask = scheduler.scheduleAtFixedRate(() -> {
             if (ws != null && !ws.isOutputClosed()) {
                 JsonObject payload = new JsonObject();
                 payload.addProperty("op", 1);

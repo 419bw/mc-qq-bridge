@@ -1,5 +1,6 @@
 package com.mcqqbridge.report;
 
+import com.mcqqbridge.report.TileCodec.TileData;
 import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
 import org.bukkit.Material;
@@ -13,23 +14,17 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.function.IntPredicate;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.IntPredicate;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
@@ -43,28 +38,10 @@ import java.util.stream.Stream;
  *
  * 线程模型：PlayerMoveEvent/PlayerJoinEvent 在主线程做非阻塞判断与 getChunkAtAsync 发起；
  * 异步加载回调取 ChunkSnapshot 后提交到自有后台单线程渲染+写盘。
+ *
+ * 瓦片格式常量、读写、hillshading 合成统一由 {@link TileCodec} 提供。
  */
 public class TerrainTileCache implements Listener {
-
-    private static final int TILE_PIXELS = 16;
-    private static final int TILE_BYTES = TILE_PIXELS * TILE_PIXELS * Integer.BYTES * 3; // rgb + height + waterDepth
-    private static final int TILE_MODE_BYTES = Integer.BYTES; // 文件头：渲染模式
-    private static final int TILE_FILE_BYTES = TILE_MODE_BYTES + TILE_BYTES;
-
-    /** 渲染模式，写入瓦片文件头：0=表面（主世界，最高非空气块）；1=空洞（下界，最长空气段底面）。 */
-    private static final int MODE_SURFACE = 0;
-    private static final int MODE_CAVE = 1;
-
-    /** 坡度阴影敏感度：主世界 4.0（约 1 格高差触发满阴影）；下界垂直落差大，0.4 约 8~10 格才满阴影。 */
-    private static final double SHADE_SENSITIVITY = 4.0;
-    private static final double NETHER_SHADE_SENSITIVITY = 0.4;
-
-    private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
-    private static final int MAX_TERRAIN_SIDE = 4096;
-    private static final int SEA_LEVEL = 63;
-    private static final int WATER_BASE_RGB = 0x4040FF; // mojang WATER 基色，用于识别水像素
-
-    private static final int FALLBACK_RGB = 0x5F8250;
 
     private final JavaPlugin plugin;
     private final Path tilesRoot;
@@ -74,8 +51,6 @@ public class TerrainTileCache implements Listener {
     private final Map<String, Set<Long>> freshByWorld = new ConcurrentHashMap<>();
     private final Map<String, Set<Long>> pendingByWorld = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastRenderChunk = new ConcurrentHashMap<>();
-
-    private record TileData(int[] rgb, int[] height, int[] waterDepth) {}
 
     public TerrainTileCache(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -106,10 +81,10 @@ public class TerrainTileCache implements Listener {
                 int expectedMode = world != null ? renderModeFor(world) : -1; // -1：世界未加载，不过滤
                 try (Stream<Path> files = Files.list(worldDir)) {
                     for (Path f : (Iterable<Path>) files::iterator) {
-                        Long key = parseTileName(f.getFileName().toString());
+                        Long key = TileCodec.parseTileName(f.getFileName().toString());
                         if (key != null) {
                             try {
-                                if (Files.size(f) >= TILE_BYTES && tileModeMatches(f, expectedMode)) {
+                                if (Files.size(f) >= TileCodec.TILE_BYTES && TileCodec.tileModeMatches(f, expectedMode)) {
                                     set.add(key);
                                     fresh.add(key);
                                     total++;
@@ -131,9 +106,9 @@ public class TerrainTileCache implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerMove(PlayerMoveEvent event) {
         Player player = event.getPlayer();
-        int cx = Math.floorDiv(player.getLocation().getBlockX(), TILE_PIXELS);
-        int cz = Math.floorDiv(player.getLocation().getBlockZ(), TILE_PIXELS);
-        long key = pack(cx, cz);
+        int cx = Math.floorDiv(player.getLocation().getBlockX(), TileCodec.TILE_PIXELS);
+        int cz = Math.floorDiv(player.getLocation().getBlockZ(), TileCodec.TILE_PIXELS);
+        long key = TileCodec.pack(cx, cz);
         Long last = lastRenderChunk.get(player.getUniqueId());
         if (last != null && last == key) {
             return; // 同一区块内移动，周围渲染范围未变
@@ -145,9 +120,9 @@ public class TerrainTileCache implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
-        int cx = Math.floorDiv(player.getLocation().getBlockX(), TILE_PIXELS);
-        int cz = Math.floorDiv(player.getLocation().getBlockZ(), TILE_PIXELS);
-        lastRenderChunk.put(player.getUniqueId(), pack(cx, cz));
+        int cx = Math.floorDiv(player.getLocation().getBlockX(), TileCodec.TILE_PIXELS);
+        int cz = Math.floorDiv(player.getLocation().getBlockZ(), TileCodec.TILE_PIXELS);
+        lastRenderChunk.put(player.getUniqueId(), TileCodec.pack(cx, cz));
         renderAround(player.getWorld(), cx, cz);
     }
 
@@ -167,7 +142,7 @@ public class TerrainTileCache implements Listener {
 
     private void ensureRendered(World world, int cx, int cz) {
         String w = world.getName();
-        long key = pack(cx, cz);
+        long key = TileCodec.pack(cx, cz);
         Set<Long> fresh = freshByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet());
         if (fresh.contains(key)) {
             return;
@@ -189,7 +164,7 @@ public class TerrainTileCache implements Listener {
                 int mode = renderModeFor(world);
                 try {
                     TileData tile = renderChunk(snapshot, mode);
-                    writeTile(w, cx, cz, tile, mode);
+                    TileCodec.writeTile(tileFile(w, cx, cz), tile, mode);
                     renderedByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet()).add(key);
                     fresh.add(key);
                 } catch (Exception e) {
@@ -206,7 +181,7 @@ public class TerrainTileCache implements Listener {
     }
 
     private TileData renderChunk(ChunkSnapshot snapshot, int mode) {
-        if (mode == MODE_CAVE) {
+        if (mode == TileCodec.MODE_CAVE) {
             return renderCaveTile(snapshot);
         }
         return renderSurfaceTile(snapshot);
@@ -214,17 +189,17 @@ public class TerrainTileCache implements Listener {
 
     /** 表面模式（主世界）：每列取最高非空气块，waterDepth 记录水深用于水面明暗平滑。 */
     private TileData renderSurfaceTile(ChunkSnapshot snapshot) {
-        int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
-        int[] height = new int[TILE_PIXELS * TILE_PIXELS];
-        int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS];
-        for (int lz = 0; lz < TILE_PIXELS; lz++) {
-            for (int lx = 0; lx < TILE_PIXELS; lx++) {
+        int[] rgb = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+        int[] height = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+        int[] waterDepth = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+        for (int lz = 0; lz < TileCodec.TILE_PIXELS; lz++) {
+            for (int lx = 0; lx < TileCodec.TILE_PIXELS; lx++) {
                 int h = snapshot.getHighestBlockYAt(lx, lz);
-                int idx = lz * TILE_PIXELS + lx;
+                int idx = lz * TileCodec.TILE_PIXELS + lx;
                 height[idx] = h;
                 var bd = snapshot.getBlockData(lx, h, lz);
                 var mapColor = bd.getMapColor();
-                rgb[idx] = mapColor != null ? mapColor.asRGB() : FALLBACK_RGB; // 方块级地图色，明暗在拼图时按原版算法算
+                rgb[idx] = mapColor != null ? mapColor.asRGB() : TileCodec.FALLBACK_RGB;
                 int wd = 0;
                 if (bd.getMaterial() == Material.WATER) {
                     for (int y = h; y > h - 64 && y >= -64; y--) {
@@ -247,14 +222,14 @@ public class TerrainTileCache implements Listener {
      * 熔岩海、要塞桥面、菌毯、双层洞穴的大洞均由此自然选中；无洞列（实心山体）退回最高块（基岩）。
      */
     private TileData renderCaveTile(ChunkSnapshot snapshot) {
-        int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
-        int[] height = new int[TILE_PIXELS * TILE_PIXELS];
-        int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS]; // 下界无水，恒 0（熔岩色不参与水深明暗）
+        int[] rgb = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+        int[] height = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+        int[] waterDepth = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS]; // 下界无水，恒 0
         final int bottomY = 1; // 跳过底部基岩层（下界维度高度固定 0..127，y=0 为基岩）
-        for (int lz = 0; lz < TILE_PIXELS; lz++) {
-            for (int lx = 0; lx < TILE_PIXELS; lx++) {
+        for (int lz = 0; lz < TileCodec.TILE_PIXELS; lz++) {
+            for (int lx = 0; lx < TileCodec.TILE_PIXELS; lx++) {
                 int h = snapshot.getHighestBlockYAt(lx, lz);
-                int idx = lz * TILE_PIXELS + lx;
+                int idx = lz * TileCodec.TILE_PIXELS + lx;
                 final int fx = lx, fz = lz;
                 int floorY = selectCaveFloorY(y -> snapshot.getBlockType(fx, y, fz).isAir(), h, bottomY);
                 if (floorY < 0) {
@@ -263,7 +238,7 @@ public class TerrainTileCache implements Listener {
                 height[idx] = floorY;
                 var bd = snapshot.getBlockData(lx, floorY, lz);
                 var mapColor = bd.getMapColor();
-                rgb[idx] = mapColor != null ? mapColor.asRGB() : FALLBACK_RGB;
+                rgb[idx] = mapColor != null ? mapColor.asRGB() : TileCodec.FALLBACK_RGB;
                 waterDepth[idx] = 0;
             }
         }
@@ -298,165 +273,24 @@ public class TerrainTileCache implements Listener {
 
     /** 世界 -> 渲染模式映射（扫描/读写/拼图共用，集中一处）。 */
     static int renderModeFor(World world) {
-        return world.getEnvironment() == World.Environment.NETHER ? MODE_CAVE : MODE_SURFACE;
-    }
-
-    /** 瓦片文件头模式是否匹配期望模式；无头旧文件（< 头+数据）视为模式 0。expectedMode < 0 不过滤。 */
-    private static boolean tileModeMatches(Path f, int expectedMode) throws IOException {
-        if (expectedMode < 0) {
-            return true;
-        }
-        if (Files.size(f) < TILE_FILE_BYTES) {
-            return expectedMode == MODE_SURFACE; // 无头旧文件 = 模式 0，仅表面模式认
-        }
-        try (InputStream in = Files.newInputStream(f)) {
-            byte[] head = in.readNBytes(TILE_MODE_BYTES);
-            return ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN).getInt() == expectedMode;
-        }
-    }
-
-    private void writeTile(String worldName, int cx, int cz, TileData tile, int mode) throws IOException {
-        Path file = tileFile(worldName, cx, cz);
-        Files.createDirectories(file.getParent());
-        ByteBuffer bb = ByteBuffer.allocate(TILE_FILE_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(mode);
-        for (int v : tile.rgb) {
-            bb.putInt(v);
-        }
-        for (int v : tile.height) {
-            bb.putInt(v);
-        }
-        for (int v : tile.waterDepth) {
-            bb.putInt(v);
-        }
-        Files.write(file, bb.array());
-    }
-
-    /** 读瓦片并按期望模式校验：无头旧文件按模式 0 兼容读；模式不符（如下界旧基岩瓦片）视为未渲染。 */
-    private TileData readTile(String worldName, int cx, int cz, int expectedMode) {
-        Path file = tileFile(worldName, cx, cz);
-        if (!Files.isRegularFile(file)) {
-            return null;
-        }
-        try {
-            byte[] bytes = Files.readAllBytes(file);
-            boolean hasHeader = bytes.length >= TILE_FILE_BYTES;
-            if (!hasHeader) {
-                if (bytes.length < TILE_BYTES) {
-                    return null; // 残缺文件作废
-                }
-                if (expectedMode != MODE_SURFACE) {
-                    return null; // 无头旧文件 = 模式 0，与期望模式不符作废
-                }
-            } else {
-                int mode = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
-                if (mode != expectedMode) {
-                    return null;
-                }
-            }
-            int dataOffset = hasHeader ? TILE_MODE_BYTES : 0;
-            IntBuffer ib = ByteBuffer.wrap(bytes, dataOffset, bytes.length - dataOffset)
-                    .order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
-            int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];
-            int[] height = new int[TILE_PIXELS * TILE_PIXELS];
-            int[] waterDepth = new int[TILE_PIXELS * TILE_PIXELS];
-            ib.get(rgb);
-            ib.get(height);
-            ib.get(waterDepth);
-            return new TileData(rgb, height, waterDepth);
-        } catch (IOException e) {
-            logger.warning("[Terrain] read tile failed for " + worldName + " " + cx + "," + cz + ": " + e.getMessage());
-            return null;
-        }
+        return world.getEnvironment() == World.Environment.NETHER ? TileCodec.MODE_CAVE : TileCodec.MODE_SURFACE;
     }
 
     /**
-     * 按世界坐标窗口从磁盘拼出带坡度阴影的底图。自动选择缩放级别（step = 2^n），
-     * 使输出图片不超过 MAX_TERRAIN_SIDE 像素。step=1 时每像素一个方块；
-     * step=4 时每像素代表 4x4 区域（采样中心点），大尺度坡度阴影保留。
-     * 缺失/未渲染区块填深色且不参与光照。
+     * 按世界坐标窗口从磁盘拼出带坡度阴影的底图。
+     * 委托 {@link TileCodec#buildTerrainImage}，瓦片读取通过回调从磁盘+缓存读。
      */
     public BufferedImage buildTerrainImage(World overworld, int winMinX, int winMinZ, int winW, int winH) {
-        if (winW <= 0 || winH <= 0) {
-            return null;
-        }
-        int step = 1;
-        while (winW / step > MAX_TERRAIN_SIDE || winH / step > MAX_TERRAIN_SIDE) {
-            step <<= 1;
-        }
-
-        int outW = (winW + step - 1) / step;
-        int outH = (winH + step - 1) / step;
-
         String w = overworld.getName();
         Set<Long> rendered = renderedByWorld.getOrDefault(w, Set.of());
         int expectedMode = renderModeFor(overworld);
-        double shadeSensitivity = expectedMode == MODE_CAVE ? NETHER_SHADE_SENSITIVITY : SHADE_SENSITIVITY;
+        double shadeSensitivity = expectedMode == TileCodec.MODE_CAVE
+                ? TileCodec.NETHER_SHADE_SENSITIVITY : TileCodec.SHADE_SENSITIVITY;
 
-        int n = outW * outH;
-        int[] rgbFlat = new int[n];
-        int[] hFlat = new int[n];
-        int[] wFlat = new int[n];
-        Arrays.fill(rgbFlat, MAP_BG_RGB);
-        Arrays.fill(hFlat, SEA_LEVEL);
-
-        int lastCx = Integer.MIN_VALUE;
-        int lastCz = Integer.MIN_VALUE;
-        TileData cur = null;
-        for (int j = 0; j < outH; j++) {
-            int worldZ = winMinZ + j * step + step / 2;
-            int cz = Math.floorDiv(worldZ, TILE_PIXELS);
-            int lz = Math.floorMod(worldZ, TILE_PIXELS);
-            for (int i = 0; i < outW; i++) {
-                int worldX = winMinX + i * step + step / 2;
-                int cx = Math.floorDiv(worldX, TILE_PIXELS);
-                if (cx != lastCx || cz != lastCz) {
-                    lastCx = cx;
-                    lastCz = cz;
-                    cur = rendered.contains(pack(cx, cz)) ? readTile(w, cx, cz, expectedMode) : null;
-                }
-                if (cur != null) {
-                    int lx = Math.floorMod(worldX, TILE_PIXELS);
-                    int cidx = lz * TILE_PIXELS + lx;
-                    int idx = j * outW + i;
-                    rgbFlat[idx] = cur.rgb[cidx];
-                    hFlat[idx] = cur.height[cidx];
-                    wFlat[idx] = cur.waterDepth[cidx];
-                }
-            }
-        }
-
-        int[] out = new int[n];
-        for (int j = 0; j < outH; j++) {
-            for (int i = 0; i < outW; i++) {
-                int idx = j * outW + i;
-                int base = rgbFlat[idx];
-                if (base == MAP_BG_RGB) {
-                    out[idx] = MAP_BG_RGB;
-                    continue;
-                }
-                int parity = (i + j) & 1;
-                int shade;
-                if (base == WATER_BASE_RGB) {
-                    double d2 = wFlat[idx] * 0.1 + parity * 0.2;
-                    shade = 1;
-                    if (d2 < 0.5) shade = 2;
-                    else if (d2 > 0.9) shade = 0;
-                } else {
-                    int h = hFlat[idx];
-                    int hN = j > 0 ? hFlat[idx - outW] : 0;
-                    double d2 = (h - hN) * shadeSensitivity / (step * 5.0) + (parity - 0.5) * 0.4;
-                    shade = 1;
-                    if (d2 > 0.6) shade = 2;
-                    else if (d2 < -0.6) shade = 0;
-                }
-                out[idx] = applyShade(base, shade);
-            }
-        }
-
-        BufferedImage img = new BufferedImage(outW, outH, BufferedImage.TYPE_INT_RGB);
-        img.setRGB(0, 0, outW, outH, out, 0, outW);
-        return img;
+        return TileCodec.buildTerrainImage(winMinX, winMinZ, winW, winH, shadeSensitivity,
+                (cx, cz) -> rendered.contains(TileCodec.pack(cx, cz))
+                        ? TileCodec.readTile(tileFile(w, cx, cz), expectedMode)
+                        : null);
     }
 
     public int tileCount() {
@@ -474,41 +308,6 @@ public class TerrainTileCache implements Listener {
     }
 
     private Path tileFile(String worldName, int cx, int cz) {
-        return tilesRoot.resolve(worldName).resolve("c" + cx + "z" + cz + ".bin");
-    }
-
-    private static long pack(int cx, int cz) {
-        return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
-    }
-
-    private static Long parseTileName(String name) {
-        if (!name.startsWith("c") || !name.endsWith(".bin")) {
-            return null;
-        }
-        String body = name.substring(1, name.length() - ".bin".length());
-        int split = body.indexOf('z');
-        if (split <= 0 || split == body.length() - 1) {
-            return null;
-        }
-        try {
-            int cx = Integer.parseInt(body.substring(0, split));
-            int cz = Integer.parseInt(body.substring(split + 1));
-            return pack(cx, cz);
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
-    private static int applyShade(int base, int shade) {
-        int mult = switch (shade) {
-            case 0 -> 180;
-            case 2 -> 255;
-            case 3 -> 135;
-            default -> 220;
-        };
-        int r = ((base >> 16) & 0xFF) * mult / 255;
-        int g = ((base >> 8) & 0xFF) * mult / 255;
-        int b = (base & 0xFF) * mult / 255;
-        return (r << 16) | (g << 8) | b;
+        return tilesRoot.resolve(worldName).resolve(TileCodec.tileFileName(cx, cz));
     }
 }
