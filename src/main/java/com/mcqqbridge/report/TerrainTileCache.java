@@ -303,8 +303,11 @@ public class TerrainTileCache implements Listener {
 
     /** 瓦片文件头模式是否匹配期望模式；无头旧文件（< 头+数据）视为模式 0。expectedMode < 0 不过滤。 */
     private static boolean tileModeMatches(Path f, int expectedMode) throws IOException {
-        if (expectedMode < 0 || Files.size(f) < TILE_FILE_BYTES) {
+        if (expectedMode < 0) {
             return true;
+        }
+        if (Files.size(f) < TILE_FILE_BYTES) {
+            return expectedMode == MODE_SURFACE; // 无头旧文件 = 模式 0，仅表面模式认
         }
         try (InputStream in = Files.newInputStream(f)) {
             byte[] head = in.readNBytes(TILE_MODE_BYTES);
@@ -338,17 +341,20 @@ public class TerrainTileCache implements Listener {
         try {
             byte[] bytes = Files.readAllBytes(file);
             boolean hasHeader = bytes.length >= TILE_FILE_BYTES;
-            if (!hasHeader && bytes.length < TILE_BYTES) {
-                return null; // 残缺文件作废
-            }
-            int dataOffset = 0;
-            if (hasHeader) {
+            if (!hasHeader) {
+                if (bytes.length < TILE_BYTES) {
+                    return null; // 残缺文件作废
+                }
+                if (expectedMode != MODE_SURFACE) {
+                    return null; // 无头旧文件 = 模式 0，与期望模式不符作废
+                }
+            } else {
                 int mode = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
                 if (mode != expectedMode) {
                     return null;
                 }
-                dataOffset = TILE_MODE_BYTES;
             }
+            int dataOffset = hasHeader ? TILE_MODE_BYTES : 0;
             IntBuffer ib = ByteBuffer.wrap(bytes, dataOffset, bytes.length - dataOffset)
                     .order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
             int[] rgb = new int[TILE_PIXELS * TILE_PIXELS];

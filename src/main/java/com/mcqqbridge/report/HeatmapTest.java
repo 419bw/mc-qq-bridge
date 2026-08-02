@@ -215,20 +215,30 @@ public class HeatmapTest {
 
     private static final int TILE_PX = 16;
     private static final int TILE_BYTES = TILE_PX * TILE_PX * Integer.BYTES * 3;
+    private static final int TILE_MODE_BYTES = Integer.BYTES; // 瓦片文件头：渲染模式（与 TerrainTileCache 一致）
     private static final int MAP_BG_RGB = new Color(24, 28, 36).getRGB();
     private static final int SEA_LEVEL = 63;
     private static final int WATER_BASE_RGB = 0x4040FF;
     private static final int MAX_SIDE = 4096;
+    private static final double NETHER_SHADE_SENSITIVITY = 0.4; // 与 TerrainTileCache 一致
 
     private record TileData(int[] rgb, int[] height, int[] waterDepth) {}
 
-    private static TileData readTile(Path dir, int cx, int cz) {
+    private static TileData readTile(Path dir, int cx, int cz, int expectedMode) {
         Path f = dir.resolve("c" + cx + "z" + cz + ".bin");
         if (!Files.isRegularFile(f)) return null;
         try {
             byte[] bytes = Files.readAllBytes(f);
-            if (bytes.length < TILE_BYTES) return null;
-            IntBuffer ib = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
+            boolean hasHeader = bytes.length >= TILE_BYTES + TILE_MODE_BYTES;
+            if (!hasHeader) {
+                if (bytes.length < TILE_BYTES) return null;
+                if (expectedMode != 0) return null; // 无头旧文件 = 模式 0，下界期望 1 → 作废（与服务器 scanDisk 一致）
+            } else {
+                int mode = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                if (mode != expectedMode) return null;
+            }
+            int off = hasHeader ? TILE_MODE_BYTES : 0;
+            IntBuffer ib = ByteBuffer.wrap(bytes, off, bytes.length - off).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer();
             int[] rgb = new int[256], h = new int[256], w = new int[256];
             ib.get(rgb); ib.get(h); ib.get(w);
             return new TileData(rgb, h, w);
@@ -237,6 +247,8 @@ public class HeatmapTest {
 
     private static BufferedImage buildTerrain(Path tilesDir, String world,
                                                int winMinX, int winMinZ, int winW, int winH) {
+        double shadeSensitivity = world.contains("nether") ? NETHER_SHADE_SENSITIVITY : 4.0;
+        int expectedMode = world.contains("nether") ? 1 : 0;
         if (winW <= 0 || winH <= 0) return null;
         Path worldDir = tilesDir.resolve(world);
         if (!Files.isDirectory(worldDir)) return null;
@@ -262,7 +274,7 @@ public class HeatmapTest {
                 int cx = Math.floorDiv(wx, TILE_PX);
                 if (cx != lastCx || cz != lastCz) {
                     lastCx = cx; lastCz = cz;
-                    cur = readTile(worldDir, cx, cz);
+                    cur = readTile(worldDir, cx, cz, expectedMode);
                 }
                 if (cur != null) {
                     int lx = Math.floorMod(wx, TILE_PX);
@@ -287,7 +299,7 @@ public class HeatmapTest {
                 } else {
                     int h = hF[idx];
                     int hN = j > 0 ? hF[idx - outW] : 0;
-                    double d2 = (h - hN) * 4.0 / (step * 5.0) + (parity - 0.5) * 0.4;
+                    double d2 = (h - hN) * shadeSensitivity / (step * 5.0) + (parity - 0.5) * 0.4;
                     shade = d2 > 0.6 ? 2 : d2 < -0.6 ? 0 : 1;
                 }
                 out[idx] = applyShade(base, shade);
@@ -313,7 +325,7 @@ public class HeatmapTest {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {
-            System.err.println("Usage: HeatmapTest <json> <tilesDir> <output.png>");
+            System.err.println("Usage: HeatmapTest <json> <tilesDir> <output.png> [worldName] [titleSuffix]");
             System.exit(1);
         }
         String jsonPath = args[0];
@@ -330,22 +342,23 @@ public class HeatmapTest {
         Map<String, PlayerSnapshot> snapshots = parseSnapshots(root);
         System.out.println("Parsed " + snapshots.size() + " player(s): " + snapshots.keySet());
 
-        String mainWorld = "world";
+        String worldName = args.length > 3 ? args[3] : "world";
+        String titleSuffix = args.length > 4 ? args[4] : null;
         int mapPadding = 64;
         int maxWidth = 1200;
 
-        int[] win = MapRenderer.computeWindow(snapshots, mapPadding, mainWorld);
+        int[] win = MapRenderer.computeWindow(snapshots, mapPadding, worldName);
         if (win == null) {
-            System.err.println("No overworld activity");
+            System.err.println("No activity in world " + worldName);
             System.exit(1);
         }
         System.out.printf("Window: [%d, %d] %d x %d%n", win[0], win[1], win[2], win[3]);
 
-        BufferedImage terrain = buildTerrain(Path.of(tilesDir), mainWorld, win[0], win[1], win[2], win[3]);
+        BufferedImage terrain = buildTerrain(Path.of(tilesDir), worldName, win[0], win[1], win[2], win[3]);
         System.out.println("Terrain: " + (terrain != null ? terrain.getWidth() + "x" + terrain.getHeight() : "null"));
 
         MapRenderer renderer = new MapRenderer(maxWidth, mapPadding);
-        byte[] png = renderer.render(snapshots, date, terrain, win, mainWorld, null);
+        byte[] png = renderer.render(snapshots, date, terrain, win, worldName, titleSuffix);
 
         if (png != null) {
             Files.write(Path.of(outPath), png);
