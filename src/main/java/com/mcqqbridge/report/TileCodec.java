@@ -152,28 +152,40 @@ public final class TileCodec {
         Arrays.fill(rgbFlat, MAP_BG_RGB);
         Arrays.fill(hFlat, SEA_LEVEL);
 
-        int lastCx = Integer.MIN_VALUE;
-        int lastCz = Integer.MIN_VALUE;
-        TileData cur = null;
-        for (int j = 0; j < outH; j++) {
-            int worldZ = winMinZ + j * step + step / 2;
-            int cz = Math.floorDiv(worldZ, TILE_PIXELS);
-            int lz = Math.floorMod(worldZ, TILE_PIXELS);
-            for (int i = 0; i < outW; i++) {
-                int worldX = winMinX + i * step + step / 2;
-                int cx = Math.floorDiv(worldX, TILE_PIXELS);
-                if (cx != lastCx || cz != lastCz) {
-                    lastCx = cx;
-                    lastCz = cz;
-                    cur = reader.read(cx, cz);
-                }
-                if (cur != null) {
-                    int lx = Math.floorMod(worldX, TILE_PIXELS);
-                    int cidx = lz * TILE_PIXELS + lx;
-                    int idx = j * outW + i;
-                    rgbFlat[idx] = cur.rgb[cidx];
-                    hFlat[idx] = cur.height[cidx];
-                    wFlat[idx] = cur.waterDepth[cidx];
+        // tile-major 采样：按瓦片遍历，每个瓦片只读一次；无数据瓦片整块跳过（不迭代其像素）。
+        // 输出像素 (i,j) 的采样点 = (winMinX + i*step + half, winMinZ + j*step + half)，与逐行版逐像素一致。
+        int half = step / 2;
+        int cxMin = Math.floorDiv(winMinX, TILE_PIXELS);
+        int cxMax = Math.floorDiv(winMinX + winW - 1, TILE_PIXELS);
+        int czMin = Math.floorDiv(winMinZ, TILE_PIXELS);
+        int czMax = Math.floorDiv(winMinZ + winH - 1, TILE_PIXELS);
+        for (int cz = czMin; cz <= czMax; cz++) {
+            int tileMinZ = cz * TILE_PIXELS;
+            int jLo = -Math.floorDiv(-(tileMinZ - winMinZ - half), step);
+            int jHi = Math.floorDiv(tileMinZ + TILE_PIXELS - 1 - winMinZ - half, step);
+            if (jLo < 0) jLo = 0;
+            if (jHi >= outH) jHi = outH - 1;
+            if (jLo > jHi) continue;
+            for (int cx = cxMin; cx <= cxMax; cx++) {
+                TileData tile = reader.read(cx, cz);
+                if (tile == null) continue;
+                int tileMinX = cx * TILE_PIXELS;
+                int iLo = -Math.floorDiv(-(tileMinX - winMinX - half), step);
+                int iHi = Math.floorDiv(tileMinX + TILE_PIXELS - 1 - winMinX - half, step);
+                if (iLo < 0) iLo = 0;
+                if (iHi >= outW) iHi = outW - 1;
+                if (iLo > iHi) continue;
+                for (int j = jLo; j <= jHi; j++) {
+                    int lz = winMinZ + j * step + half - tileMinZ;
+                    int rowBase = j * outW;
+                    for (int i = iLo; i <= iHi; i++) {
+                        int lx = winMinX + i * step + half - tileMinX;
+                        int cidx = lz * TILE_PIXELS + lx;
+                        int idx = rowBase + i;
+                        rgbFlat[idx] = tile.rgb[cidx];
+                        hFlat[idx] = tile.height[cidx];
+                        wFlat[idx] = tile.waterDepth[cidx];
+                    }
                 }
             }
         }
