@@ -178,6 +178,11 @@ public class PlayerTracker implements Listener {
         return todayRecord();
     }
 
+    /** 插件启动时从磁盘恢复当天记录（防重启后自动保存用不完整内存覆盖磁盘完整文件）。 */
+    public void restoreToday(DailyRecord record) {
+        records.put(record.getDate(), record);
+    }
+
     public Collection<String> recordDates() {
         return records.keySet();
     }

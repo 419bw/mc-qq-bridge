@@ -9,11 +9,13 @@ import com.mcqqbridge.report.MapRenderer;
 import com.mcqqbridge.report.ReportFormatter;
 import com.mcqqbridge.report.TerrainTileCache;
 import com.mcqqbridge.stats.DataStore;
+import com.mcqqbridge.stats.DailyRecord;
 import com.mcqqbridge.stats.PlayerTracker;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.time.LocalDate;
 
 public class McQqBridgePlugin extends JavaPlugin {
 
@@ -53,6 +55,11 @@ public class McQqBridgePlugin extends JavaPlugin {
         }
 
         dataStore = new DataStore(this, config.getStayThresholdMs());
+        DailyRecord today = dataStore.load(LocalDate.now().toString());
+        if (today != null) {
+            tracker.restoreToday(today);
+            getLogger().info("[Restore] restored today's record from disk");
+        }
         MapRenderer renderer = new MapRenderer(config.getMapMaxWidth(), config.getMapPadding());
         ReportFormatter formatter = new ReportFormatter();
         reportScheduler = new DailyReportScheduler(this, config, tracker, dataStore, renderer,

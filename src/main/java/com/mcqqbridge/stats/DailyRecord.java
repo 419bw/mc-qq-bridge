@@ -1,6 +1,7 @@
 package com.mcqqbridge.stats;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.time.Instant;
@@ -243,6 +244,66 @@ public class DailyRecord {
         }
         root.add("players", playersObj);
         return root;
+    }
+
+    /**
+     * 从 JSON 反序列化（DataStore.load 用）。stays 不还原（snapshotAll 时从 trail 重算），
+     * minY/地下点数由 addTrail 自动重建。字段缺失按空处理（兼容历史版本）。
+     */
+    public static DailyRecord fromJson(JsonObject root) {
+        DailyRecord record = new DailyRecord(root.get("date").getAsString());
+        JsonObject playersObj = root.getAsJsonObject("players");
+        if (playersObj == null) {
+            return record;
+        }
+        for (Map.Entry<String, JsonElement> e : playersObj.entrySet()) {
+            String name = e.getKey();
+            JsonObject po = e.getValue().getAsJsonObject();
+
+            if (po.has("playtimeMinutes")) {
+                record.addPlaytime(name, po.get("playtimeMinutes").getAsLong() * 60000);
+            }
+            JsonObject stats = po.getAsJsonObject("stats");
+            if (stats != null) {
+                for (Map.Entry<String, JsonElement> se : stats.entrySet()) {
+                    record.addStat(name, se.getKey(), se.getValue().getAsInt());
+                }
+            }
+            JsonArray chats = po.getAsJsonArray("chats");
+            if (chats != null) {
+                for (JsonElement ce : chats) {
+                    JsonObject co = ce.getAsJsonObject();
+                    record.addChat(name, co.get("t").getAsLong(), co.get("text").getAsString());
+                }
+            }
+            JsonArray trail = po.getAsJsonArray("trail");
+            if (trail != null) {
+                for (JsonElement te : trail) {
+                    JsonObject to = te.getAsJsonObject();
+                    record.addTrail(name, to.get("x").getAsInt(), to.get("y").getAsInt(), to.get("z").getAsInt(),
+                            to.get("t").getAsLong(), to.get("world").getAsString());
+                }
+            }
+            JsonArray breaks = po.getAsJsonArray("breaks");
+            if (breaks != null) {
+                for (JsonElement be : breaks) {
+                    JsonObject bo = be.getAsJsonObject();
+                    record.addBreak(name, bo.get("type").getAsString(), bo.get("world").getAsString(),
+                            bo.get("x").getAsInt(), bo.get("y").getAsInt(), bo.get("z").getAsInt(),
+                            bo.get("t").getAsLong());
+                }
+            }
+            JsonArray events = po.getAsJsonArray("events");
+            if (events != null) {
+                for (JsonElement ee : events) {
+                    JsonObject eo = ee.getAsJsonObject();
+                    record.addEvent(name, eo.get("type").getAsString(), eo.get("world").getAsString(),
+                            eo.get("x").getAsInt(), eo.get("y").getAsInt(), eo.get("z").getAsInt(),
+                            eo.get("t").getAsLong(), eo.has("text") ? eo.get("text").getAsString() : "");
+                }
+            }
+        }
+        return record;
     }
 
     // 调用方已持有 d 的锁；synchronized 可重入，安全。
