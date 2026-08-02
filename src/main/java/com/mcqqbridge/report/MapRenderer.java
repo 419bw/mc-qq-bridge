@@ -106,7 +106,7 @@ public class MapRenderer {
     }
 
     public byte[] render(Map<String, PlayerSnapshot> snapshots, String date, BufferedImage terrain, int[] win,
-                         String mainWorld) {
+                         String mainWorld, String titleSuffix) {
         if (win == null) {
             return null;
         }
@@ -317,7 +317,7 @@ public class MapRenderer {
 
             Font titleFont = new Font(Font.SANS_SERIF, Font.BOLD, 14);
             g.setFont(titleFont);
-            drawOutlinedText(g, "探索日报 " + date, 6, 18, Color.WHITE);
+            drawOutlinedText(g, "探索日报 " + date + (titleSuffix == null ? "" : titleSuffix), 6, 18, Color.WHITE);
 
             Font legendFont = new Font(Font.SANS_SERIF, Font.PLAIN, 12);
             g.setFont(legendFont);

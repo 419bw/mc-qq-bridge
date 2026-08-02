@@ -165,25 +165,44 @@ public class DailyReportScheduler {
         World overworld = Bukkit.getWorlds().stream()
                 .filter(w -> w.getEnvironment() == World.Environment.NORMAL)
                 .findFirst().orElse(null);
-        String mainWorld = overworld == null ? null : overworld.getName();
+        World netherWorld = Bukkit.getWorlds().stream()
+                .filter(w -> w.getEnvironment() == World.Environment.NETHER)
+                .findFirst().orElse(null);
 
-        int[] win = overworld == null ? null : MapRenderer.computeWindow(snap, config.getMapPadding(), mainWorld);
-        BufferedImage terrain = null;
-        if (win != null && terrainCache != null && overworld != null) {
-            terrain = terrainCache.buildTerrainImage(overworld, win[0], win[1], win[2], win[3]);
-            logger.info("[Report] terrain tiles on disk: " + terrainCache.tileCount());
+        boolean anyMap = false;
+        if (overworld != null) {
+            anyMap |= renderAndPush(snap, record.getDate(), gid, overworld, null);
+            if (terrainCache != null) {
+                logger.info("[Report] terrain tiles on disk: " + terrainCache.tileCount());
+            }
         }
-
-        byte[] png = renderer.render(snap, record.getDate(), terrain, win, mainWorld);
-        if (png != null) {
-            qqClient.sendGroupImage(gid, png);
-        } else {
+        if (netherWorld != null) {
+            renderAndPush(snap, record.getDate(), gid, netherWorld, "（下界）");
+        }
+        if (!anyMap) {
             logger.info("[Report] no map generated (no tracked activity)");
         }
 
         if (terrainCache != null) {
             terrainCache.resetFreshMarkers();
         }
+    }
+
+    /** 渲染并推送单个世界的探索图（computeWindow -> 底图 -> 叠加 -> 推送）；无该世界活动时返回 false。 */
+    private boolean renderAndPush(Map<String, PlayerSnapshot> snap, String date, String gid,
+                                  World world, String titleSuffix) {
+        String worldName = world.getName();
+        int[] win = MapRenderer.computeWindow(snap, config.getMapPadding(), worldName);
+        if (win == null) {
+            return false;
+        }
+        BufferedImage terrain = terrainCache == null ? null
+                : terrainCache.buildTerrainImage(world, win[0], win[1], win[2], win[3]);
+        byte[] png = renderer.render(snap, date, terrain, win, worldName, titleSuffix);
+        if (png != null) {
+            qqClient.sendGroupImage(gid, png);
+        }
+        return true;
     }
 
     private void pruneMemory() {
