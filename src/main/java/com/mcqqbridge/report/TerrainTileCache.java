@@ -3,6 +3,7 @@ package com.mcqqbridge.report;
 import com.mcqqbridge.report.TileCodec.TileData;
 import org.bukkit.Bukkit;
 import org.bukkit.ChunkSnapshot;
+import org.bukkit.HeightMap;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -37,7 +38,8 @@ import java.util.stream.Stream;
  * 跑图时视距扫过的区域连成实心探索带，自然减少空洞。
  *
  * 线程模型：PlayerMoveEvent/PlayerJoinEvent 在主线程做非阻塞判断与 getChunkAtAsync 发起；
- * 异步加载回调取 ChunkSnapshot 后提交到自有后台单线程渲染+写盘。
+ * 异步加载回调 runTask 回主线程取 ChunkSnapshot 与 WORLD_SURFACE 高度（World API 契约），
+ * 再提交到自有后台单线程渲染+写盘。
  *
  * 瓦片格式常量、读写、hillshading 合成统一由 {@link TileCodec} 提供。
  */
@@ -152,26 +154,45 @@ public class TerrainTileCache implements Listener {
             return; // 已在渲染中
         }
         world.getChunkAtAsync(cx, cz).thenAccept(chunk -> {
-            ChunkSnapshot snapshot;
-            try {
-                snapshot = chunk.getChunkSnapshot(true, true, false);
-            } catch (Exception e) {
-                logger.warning("[Terrain] snapshot failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
-                pending.remove(key);
-                return;
-            }
-            renderExecutor.submit(() -> {
-                int mode = renderModeFor(world);
+            // 快照与 WORLD_SURFACE 高度均要求主线程（World API 契约）：runTask 回到主线程执行。
+            // 高度图用 WORLD_SURFACE（非空气判定）而非快照的 MOTION_BLOCKING：26.2 的 1 层雪
+            // 碰撞形状为空会被 MOTION_BLOCKING 跳过，导致雪山显示草色（与原版地图行为对齐）。
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                ChunkSnapshot snapshot;
                 try {
-                    TileData tile = renderChunk(snapshot, mode);
-                    TileCodec.writeTile(tileFile(w, cx, cz), tile, mode);
-                    renderedByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet()).add(key);
-                    fresh.add(key);
+                    snapshot = chunk.getChunkSnapshot(true, true, false);
                 } catch (Exception e) {
-                    logger.warning("[Terrain] render/write failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
-                } finally {
+                    logger.warning("[Terrain] snapshot failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
                     pending.remove(key);
+                    return;
                 }
+                int mode = renderModeFor(world);
+                final int[] surfaceHeights;
+                if (mode == TileCodec.MODE_SURFACE) {
+                    int baseX = cx * TileCodec.TILE_PIXELS;
+                    int baseZ = cz * TileCodec.TILE_PIXELS;
+                    surfaceHeights = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
+                    for (int lz = 0; lz < TileCodec.TILE_PIXELS; lz++) {
+                        for (int lx = 0; lx < TileCodec.TILE_PIXELS; lx++) {
+                            surfaceHeights[lz * TileCodec.TILE_PIXELS + lx] =
+                                    world.getHighestBlockYAt(baseX + lx, baseZ + lz, HeightMap.WORLD_SURFACE);
+                        }
+                    }
+                } else {
+                    surfaceHeights = null;
+                }
+                renderExecutor.submit(() -> {
+                    try {
+                        TileData tile = renderChunk(snapshot, mode, surfaceHeights);
+                        TileCodec.writeTile(tileFile(w, cx, cz), tile, mode);
+                        renderedByWorld.computeIfAbsent(w, k -> ConcurrentHashMap.newKeySet()).add(key);
+                        fresh.add(key);
+                    } catch (Exception e) {
+                        logger.warning("[Terrain] render/write failed for " + w + " " + cx + "," + cz + ": " + e.getMessage());
+                    } finally {
+                        pending.remove(key);
+                    }
+                });
             });
         }).exceptionally(ex -> {
             logger.warning("[Terrain] chunk load failed for " + w + " " + cx + "," + cz + ": " + ex.getMessage());
@@ -180,21 +201,21 @@ public class TerrainTileCache implements Listener {
         });
     }
 
-    private TileData renderChunk(ChunkSnapshot snapshot, int mode) {
+    private TileData renderChunk(ChunkSnapshot snapshot, int mode, int[] surfaceHeights) {
         if (mode == TileCodec.MODE_CAVE) {
             return renderCaveTile(snapshot);
         }
-        return renderSurfaceTile(snapshot);
+        return renderSurfaceTile(snapshot, surfaceHeights);
     }
 
-    /** 表面模式（主世界）：每列取最高非空气块，waterDepth 记录水深用于水面明暗平滑。 */
-    private TileData renderSurfaceTile(ChunkSnapshot snapshot) {
+    /** 表面模式（主世界）：每列取 WORLD_SURFACE 高度（非空气判定，含雪层/花/草等薄方块），waterDepth 记录水深用于水面明暗平滑。 */
+    private TileData renderSurfaceTile(ChunkSnapshot snapshot, int[] surfaceHeights) {
         int[] rgb = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
         int[] height = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
         int[] waterDepth = new int[TileCodec.TILE_PIXELS * TileCodec.TILE_PIXELS];
         for (int lz = 0; lz < TileCodec.TILE_PIXELS; lz++) {
             for (int lx = 0; lx < TileCodec.TILE_PIXELS; lx++) {
-                int h = snapshot.getHighestBlockYAt(lx, lz);
+                int h = surfaceHeights[lz * TileCodec.TILE_PIXELS + lx];
                 int idx = lz * TileCodec.TILE_PIXELS + lx;
                 height[idx] = h;
                 var bd = snapshot.getBlockData(lx, h, lz);
