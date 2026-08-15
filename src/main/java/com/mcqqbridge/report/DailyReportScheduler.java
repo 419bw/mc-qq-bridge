@@ -91,9 +91,9 @@ public class DailyReportScheduler {
         return enabled;
     }
 
-    /** 手动立即生成并推送今日日报（无视 enabled）。调用方须在主线程。 */
+    /** 手动立即生成并推送当前窗口日报，并切换到新统计窗口（无视 enabled）。调用方须在主线程。 */
     public void runNow() {
-        dispatch(collectOnline());
+        reportAndRoll();
     }
 
     private void scheduleNext() {
@@ -109,13 +109,26 @@ public class DailyReportScheduler {
     private void collectAndDispatch() {
         try {
             if (enabled) {
-                dispatch(collectOnline());
+                reportAndRoll();
             }
         } finally {
             if (enabled) {
                 scheduleNext();
             }
         }
+    }
+
+    /**
+     * 主线程执行：结算在线玩家 -> 冻结本窗口 record 引用 -> 拍在线快照（结算后增量归零，
+     * 只提供"谁还在线"状态，避免与 record 已结算数字双计）-> 切窗 -> 异步落盘/渲染/推送。
+     * 切窗后新事件直接进新一天的 record，与异步出报互不干扰。
+     */
+    private void reportAndRoll() {
+        tracker.settleOnline();
+        DailyRecord frozen = tracker.getTodayRecord();
+        List<ReportFormatter.OnlineSnapshot> online = collectOnline();
+        tracker.roll();
+        dispatch(frozen, online);
     }
 
     private List<ReportFormatter.OnlineSnapshot> collectOnline() {
@@ -129,13 +142,11 @@ public class DailyReportScheduler {
         return online;
     }
 
-    private void dispatch(List<ReportFormatter.OnlineSnapshot> online) {
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> doReport(online));
+    private void dispatch(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online) {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> doReport(record, online));
     }
 
-    private void doReport(List<ReportFormatter.OnlineSnapshot> online) {
-        DailyRecord record = tracker.getTodayRecord();
-
+    private void doReport(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online) {
         try {
             Path file = dataStore.save(record);
             logger.info("[Report] saved " + file);

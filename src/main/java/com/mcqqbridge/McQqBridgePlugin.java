@@ -15,7 +15,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
-import java.time.LocalDate;
 
 public class McQqBridgePlugin extends JavaPlugin {
 
@@ -46,7 +45,8 @@ public class McQqBridgePlugin extends JavaPlugin {
         qqClient.setOnGroupOpenIdDetected(chatBridge::handleGroupOpenIdDetected);
         Bukkit.getPluginManager().registerEvents(chatBridge, this);
 
-        tracker = new PlayerTracker(this, config.getTrailIntervalMs(), config.getStayThresholdMs());
+        tracker = new PlayerTracker(this, config.getTrailIntervalMs(), config.getStayThresholdMs(),
+                config.getReportHour(), config.getReportMinute());
         Bukkit.getPluginManager().registerEvents(tracker, this);
 
         if (config.isTerrainEnabled()) {
@@ -55,7 +55,7 @@ public class McQqBridgePlugin extends JavaPlugin {
         }
 
         dataStore = new DataStore(this, config.getStayThresholdMs());
-        DailyRecord today = dataStore.load(LocalDate.now().toString());
+        DailyRecord today = dataStore.load(tracker.getActiveDate());
         if (today != null) {
             tracker.restoreToday(today);
             getLogger().info("[Restore] restored today's record from disk");

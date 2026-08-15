@@ -2,6 +2,7 @@ package com.mcqqbridge.stats;
 
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Statistic;
 import org.bukkit.entity.Player;
@@ -17,6 +18,7 @@ import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Map;
 import java.util.UUID;
@@ -26,6 +28,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 数据采集监听器。独立于桥接模式：无论 chat/full 都始终采集。
  * 轨迹按固定时间间隔采样，并过滤坐标未变化的点（挂机不产生冗余点，
  * 停留时长由相邻点的时间间隔表达）。
+ * 统计日以日报时刻为边界（日报 N = 上次日报到本次日报之间的窗口），
+ * 不按自然日：日报发送后 roll() 切到下一天，跨午夜会话在日报时先结算前半段。
  */
 public class PlayerTracker implements Listener {
 
@@ -36,17 +40,26 @@ public class PlayerTracker implements Listener {
     private final Map<String, DailyRecord> records = new ConcurrentHashMap<>();
     private final Map<UUID, TrailState> trailState = new ConcurrentHashMap<>();
     private final Map<UUID, Long> joinTime = new ConcurrentHashMap<>();
+    private volatile String activeDate;
 
     private record TrailState(long lastRecordT, int x, int y, int z) {}
 
-    public PlayerTracker(JavaPlugin plugin, long trailIntervalMs, long stayThresholdMs) {
+    public PlayerTracker(JavaPlugin plugin, long trailIntervalMs, long stayThresholdMs,
+                         int reportHour, int reportMinute) {
         this.plugin = plugin;
         this.trailIntervalMs = trailIntervalMs;
         this.stayThresholdMs = stayThresholdMs;
+        this.activeDate = activeDateFor(LocalDateTime.now(), reportHour, reportMinute).toString();
+    }
+
+    /** 统计窗口归属日：当前时刻在今日日报时刻之前属于今天，之后（含日报刚结束）属于明天。 */
+    static LocalDate activeDateFor(LocalDateTime now, int reportHour, int reportMinute) {
+        LocalDateTime boundary = now.toLocalDate().atTime(reportHour, reportMinute, 0);
+        return now.isBefore(boundary) ? now.toLocalDate() : now.toLocalDate().plusDays(1);
     }
 
     private DailyRecord todayRecord() {
-        return records.computeIfAbsent(LocalDate.now().toString(), DailyRecord::new);
+        return records.computeIfAbsent(activeDate, DailyRecord::new);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -178,7 +191,35 @@ public class PlayerTracker implements Listener {
         return todayRecord();
     }
 
-    /** 插件启动时从磁盘恢复当天记录（防重启后自动保存用不完整内存覆盖磁盘完整文件）。 */
+    public String getActiveDate() {
+        return activeDate;
+    }
+
+    /**
+     * 日报触发时主线程调用：把在线玩家本窗口的时长/统计增量结算进当前 record，
+     * joinTime 重置、统计基线前移，后续退出时只结算剩余部分给新窗口。
+     */
+    public void settleOnline() {
+        long now = System.currentTimeMillis();
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            Long jt = joinTime.get(p.getUniqueId());
+            if (jt != null) {
+                todayRecord().addPlaytime(p.getName(), now - jt);
+                joinTime.put(p.getUniqueId(), now);
+            }
+            Map<Statistic, Integer> delta = statistics.computeAndRemoveDelta(p);
+            DailyRecord record = todayRecord();
+            delta.forEach((s, v) -> record.addStat(p.getName(), s.name(), v));
+            statistics.recordBaseline(p);
+        }
+    }
+
+    /** 日报发送完毕后调用：统计窗口切到下一天，后续事件归入新一天的日报。 */
+    public void roll() {
+        activeDate = LocalDate.parse(activeDate).plusDays(1).toString();
+    }
+
+    /** 插件启动时从磁盘恢复当前统计窗口的记录（防重启后自动保存用不完整内存覆盖磁盘完整文件）。 */
     public void restoreToday(DailyRecord record) {
         records.put(record.getDate(), record);
     }
