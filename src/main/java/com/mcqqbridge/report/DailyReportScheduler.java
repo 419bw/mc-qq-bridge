@@ -106,6 +106,14 @@ public class DailyReportScheduler {
         task = Bukkit.getScheduler().runTaskLater(plugin, this::collectAndDispatch, ticks);
     }
 
+    /** 日报已发出并切窗后重排：直接排明天的日报点，不再比较今日边界（当日日报点已触发过）。 */
+    private void scheduleNextDay() {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime next = now.toLocalDate().plusDays(1).atTime(hour, minute, 0);
+        long ticks = Math.max(1, Duration.between(now, next).toMillis() / 50);
+        task = Bukkit.getScheduler().runTaskLater(plugin, this::collectAndDispatch, ticks);
+    }
+
     private void collectAndDispatch() {
         try {
             if (enabled) {
@@ -113,7 +121,7 @@ public class DailyReportScheduler {
             }
         } finally {
             if (enabled) {
-                scheduleNext();
+                scheduleNextDay();
             }
         }
     }
@@ -223,8 +231,7 @@ public class DailyReportScheduler {
                 if (LocalDate.parse(date).isBefore(yesterday)) {
                     tracker.removeRecord(date);
                 }
-            } catch (DateTimeParseException ignored) {
-            }
+            } catch (DateTimeParseException ignored) {}
         }
     }
 }
