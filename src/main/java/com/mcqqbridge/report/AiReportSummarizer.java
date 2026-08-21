@@ -79,8 +79,11 @@ public class AiReportSummarizer {
             JsonObject body = new JsonObject();
             body.addProperty("model", model);
             body.add("messages", messages);
-            body.addProperty("max_tokens", 800);
             body.addProperty("temperature", 0.7);
+            JsonObject thinking = new JsonObject();
+            thinking.addProperty("type", "enabled");
+            body.add("thinking", thinking);
+            body.addProperty("reasoning_effort", "low");
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl + "/chat/completions"))

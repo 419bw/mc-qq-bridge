@@ -22,7 +22,7 @@ report:
     enabled: true
     base-url: "https://api.deepseek.com"
     api-key: ""
-    model: "deepseek-chat"
-    timeout-sec: 30
+    model: "deepseek-v4-flash"
+    timeout-sec: 60
   terrain:
     enabled: true
