@@ -11,6 +11,7 @@ import com.mcqqbridge.report.TerrainTileCache;
 import com.mcqqbridge.stats.DataStore;
 import com.mcqqbridge.stats.DailyRecord;
 import com.mcqqbridge.stats.PlayerTracker;
+import com.mcqqbridge.stats.StatsSnapshotStore;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -24,6 +25,7 @@ public class McQqBridgePlugin extends JavaPlugin {
     private QQBotClient qqClient;
     private PlayerTracker tracker;
     private DataStore dataStore;
+    private StatsSnapshotStore statsStore;
     private TerrainTileCache terrainCache;
     private DailyReportScheduler reportScheduler;
 
@@ -55,6 +57,7 @@ public class McQqBridgePlugin extends JavaPlugin {
         }
 
         dataStore = new DataStore(this, config.getStayThresholdMs());
+        statsStore = new StatsSnapshotStore(this);
         DailyRecord today = dataStore.load(tracker.getActiveDate());
         if (today != null) {
             tracker.restoreToday(today);
@@ -62,8 +65,8 @@ public class McQqBridgePlugin extends JavaPlugin {
         }
         MapRenderer renderer = new MapRenderer(config.getMapMaxWidth(), config.getMapPadding());
         ReportFormatter formatter = new ReportFormatter();
-        reportScheduler = new DailyReportScheduler(this, config, tracker, dataStore, renderer,
-                formatter, qqClient, terrainCache, config.getReportHour(), config.getReportMinute(),
+        reportScheduler = new DailyReportScheduler(this, config, tracker, dataStore, statsStore,
+                renderer, formatter, qqClient, terrainCache, config.getReportHour(), config.getReportMinute(),
                 config.getRetentionDays(), config.isReportEnabled());
         reportScheduler.start();
 

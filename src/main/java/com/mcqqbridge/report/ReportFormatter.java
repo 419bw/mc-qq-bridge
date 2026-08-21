@@ -3,7 +3,6 @@ package com.mcqqbridge.report;
 import com.mcqqbridge.stats.DailyRecord.GameEvent;
 import com.mcqqbridge.stats.DailyRecord.PlayerSnapshot;
 import com.mcqqbridge.stats.DailyRecord.Stay;
-import org.bukkit.Statistic;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -14,12 +13,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * 将快照与在线玩家未结算部分合并为日报摘要，并格式化为纯文本。
- * 在线玩家的统计/时长在主线程采集为 OnlineSnapshot 后传入，本类不访问 Bukkit 玩家数据，可在异步线程运行。
+ * 将快照与在线玩家信息合并为日报摘要，并格式化为纯文本。
+ * 统计全部来自 record（结算点快照 diff 已并入）；OnlineSnapshot 只提供在线玩家名字与
+ * 进服时间，用于补齐在线时长段。本类不访问 Bukkit 玩家数据，可在异步线程运行。
  */
 public class ReportFormatter {
 
-    public record OnlineSnapshot(UUID id, String name, Map<Statistic, Integer> delta, Long joinTime) {}
+    public record OnlineSnapshot(UUID id, String name, Long joinTime) {}
 
     public record PlayerSummary(
             String name,
@@ -39,12 +39,10 @@ public class ReportFormatter {
                                      long stayThresholdMs,
                                      long now) {
         Map<String, Long> onlineJoin = new HashMap<>();
-        Map<String, Map<Statistic, Integer>> onlineDelta = new HashMap<>();
         Set<String> onlineNames = new HashSet<>();
         for (OnlineSnapshot os : online) {
             onlineNames.add(os.name);
             onlineJoin.put(os.name, os.joinTime);
-            onlineDelta.put(os.name, os.delta);
         }
 
         List<PlayerSummary> summaries = new ArrayList<>();
@@ -62,10 +60,6 @@ public class ReportFormatter {
             }
 
             Map<String, Integer> stats = new HashMap<>(s.stats());
-            Map<Statistic, Integer> od = onlineDelta.get(name);
-            if (od != null) {
-                od.forEach((st, v) -> stats.merge(st.name(), v, Integer::sum));
-            }
 
             long longest = 0;
             for (Stay st : s.stays()) {
@@ -98,13 +92,11 @@ public class ReportFormatter {
             summaries.add(new PlayerSummary(name, playMs / 60000, stats, s.chatCount(), longest, death, adv));
         }
 
-        // 在线但当日尚无任何记录的玩家（仅时长/统计）
+        // 在线但当日尚无任何记录的玩家（仅时长）
         for (OnlineSnapshot os : online) {
             if (!snap.containsKey(os.name)) {
                 long playMs = os.joinTime != null ? Math.max(0, now - os.joinTime) : 0;
-                Map<String, Integer> stats = new HashMap<>();
-                os.delta.forEach((st, v) -> stats.merge(st.name(), v, Integer::sum));
-                summaries.add(new PlayerSummary(os.name, playMs / 60000, stats, 0, 0, 0, 0));
+                summaries.add(new PlayerSummary(os.name, playMs / 60000, new HashMap<>(), 0, 0, 0, 0));
             }
         }
 
@@ -124,8 +116,8 @@ public class ReportFormatter {
             sb.append("- ").append(p.name).append("：在线 ").append(p.playtimeMinutes()).append(" 分钟");
             appendIfPositive(sb, p.chatCount(), " 聊天 ", " 条");
             appendIfPositive(sb, p.deathCount(), " 死亡 ", "");
-            appendIfPositive(sb, p.stats().getOrDefault("MOB_KILLS", 0), " 击杀 ", "");
-            int walkCm = p.stats().getOrDefault("WALK_ONE_CM", 0);
+            appendIfPositive(sb, p.stats().getOrDefault("minecraft:custom:minecraft:mob_kills", 0), " 击杀 ", "");
+            int walkCm = p.stats().getOrDefault("minecraft:custom:minecraft:walk_one_cm", 0);
             if (walkCm > 0) {
                 sb.append(String.format(" 行走 %.1fkm", walkCm / 100000.0));
             }

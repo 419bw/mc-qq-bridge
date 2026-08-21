@@ -6,6 +6,7 @@ import com.mcqqbridge.stats.DailyRecord;
 import com.mcqqbridge.stats.DailyRecord.PlayerSnapshot;
 import com.mcqqbridge.stats.DataStore;
 import com.mcqqbridge.stats.PlayerTracker;
+import com.mcqqbridge.stats.StatsSnapshotStore;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
@@ -14,14 +15,17 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.logging.Logger;
 
 /**
@@ -34,6 +38,7 @@ public class DailyReportScheduler {
     private final BridgeConfig config;
     private final PlayerTracker tracker;
     private final DataStore dataStore;
+    private final StatsSnapshotStore statsStore;
     private final MapRenderer renderer;
     private final ReportFormatter formatter;
     private final QQBotClient qqClient;
@@ -47,13 +52,15 @@ public class DailyReportScheduler {
     private BukkitTask task;
 
     public DailyReportScheduler(JavaPlugin plugin, BridgeConfig config, PlayerTracker tracker,
-                                DataStore dataStore, MapRenderer renderer, ReportFormatter formatter,
+                                DataStore dataStore, StatsSnapshotStore statsStore,
+                                MapRenderer renderer, ReportFormatter formatter,
                                 QQBotClient qqClient, TerrainTileCache terrainCache,
                                 int hour, int minute, int retentionDays, boolean enabled) {
         this.plugin = plugin;
         this.config = config;
         this.tracker = tracker;
         this.dataStore = dataStore;
+        this.statsStore = statsStore;
         this.renderer = renderer;
         this.formatter = formatter;
         this.qqClient = qqClient;
@@ -127,16 +134,17 @@ public class DailyReportScheduler {
     }
 
     /**
-     * 主线程执行：结算在线玩家 -> 冻结本窗口 record 引用 -> 拍在线快照（结算后增量归零，
-     * 只提供"谁还在线"状态，避免与 record 已结算数字双计）-> 切窗 -> 异步落盘/渲染/推送。
-     * 切窗后新事件直接进新一天的 record，与异步出报互不干扰。
+     * 主线程执行：结算在线玩家时长 -> 冻结本窗口 record 引用 -> 收集在线玩家名单
+     * （供快照 diff 解析 UUID 名字与补齐在线时长）-> 解析原版 stats 目录 -> 切窗 ->
+     * 异步执行快照 diff、落盘、渲染与推送。切窗后新事件直接进新一天的 record，与异步出报互不干扰。
      */
     private void reportAndRoll() {
         tracker.settleOnline();
         DailyRecord frozen = tracker.getTodayRecord();
         List<ReportFormatter.OnlineSnapshot> online = collectOnline();
+        Path statsDir = resolveStatsDir();
         tracker.roll();
-        dispatch(frozen, online);
+        dispatch(frozen, online, statsDir);
     }
 
     private List<ReportFormatter.OnlineSnapshot> collectOnline() {
@@ -144,17 +152,71 @@ public class DailyReportScheduler {
         for (Player p : Bukkit.getOnlinePlayers()) {
             online.add(new ReportFormatter.OnlineSnapshot(
                     p.getUniqueId(), p.getName(),
-                    tracker.currentOnlineDelta(p),
                     tracker.getJoinTime(p.getUniqueId())));
         }
         return online;
     }
 
-    private void dispatch(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online) {
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> doReport(record, online));
+    /** 在线 UUID -> 名字映射（主线程收集，供快照 diff 落 record 时解析在线玩家）。 */
+    private Map<UUID, String> onlineNames(List<ReportFormatter.OnlineSnapshot> online) {
+        Map<UUID, String> names = new HashMap<>();
+        for (ReportFormatter.OnlineSnapshot os : online) {
+            names.put(os.id(), os.name());
+        }
+        return names;
     }
 
-    private void doReport(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online) {
+    /**
+     * 定位原版 stats 目录：新版布局 <overworld>/players/stats/（Paper 26.x），
+     * 老布局退回 <overworld>/stats/；都找不到返回 null（本次结算跳过统计，其余日报不受影响）。
+     */
+    private Path resolveStatsDir() {
+        World overworld = Bukkit.getWorlds().stream()
+                .filter(w -> w.getEnvironment() == World.Environment.NORMAL)
+                .findFirst()
+                .orElse(Bukkit.getWorlds().isEmpty() ? null : Bukkit.getWorlds().get(0));
+        if (overworld == null) {
+            return null;
+        }
+        Path base = overworld.getWorldFolder().toPath();
+        Path playersStats = base.resolve("players").resolve("stats");
+        if (Files.isDirectory(base.resolve("players")) || Files.isDirectory(playersStats)) {
+            return playersStats;
+        }
+        Path legacy = base.resolve("stats");
+        return Files.isDirectory(legacy) ? legacy : null;
+    }
+
+    private void dispatch(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online, Path statsDir) {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> doReport(record, online, statsDir));
+    }
+
+    private void doReport(DailyRecord record, List<ReportFormatter.OnlineSnapshot> online, Path statsDir) {
+        // 全量统计：结算点快照 + 相邻快照 diff，增量写入收起窗口的 record（须在落盘前完成）
+        if (statsDir != null) {
+            try {
+                var prev = statsStore.loadLatest();
+                var curr = statsStore.readCurrent(statsDir);
+                if (curr.isEmpty() && prev != null && !prev.isEmpty()) {
+                    // 已有基线却读到空目录：大概率是读取异常，跳过本轮以保护基线，
+                    // 避免空快照成为新基线后，下次结算把全时累计误计为当日增量
+                    logger.warning("[Stats] current snapshot empty while baseline exists, skip to protect baseline");
+                } else {
+                    var deltas = statsStore.diff(prev, curr);
+                    statsStore.save(curr, LocalDateTime.now());
+                    if (prev == null) {
+                        logger.info("[Stats] first snapshot saved (baseline), numbers start from next settlement");
+                    } else {
+                        statsStore.mergeInto(record, deltas, onlineNames(online));
+                    }
+                }
+            } catch (IOException e) {
+                logger.warning("[Stats] snapshot failed: " + e.getMessage());
+            }
+        } else {
+            logger.warning("[Stats] vanilla stats dir not found, statistics skipped this settlement");
+        }
+
         try {
             Path file = dataStore.save(record);
             logger.info("[Report] saved " + file);
@@ -165,6 +227,10 @@ public class DailyReportScheduler {
         int removed = dataStore.cleanup(retentionDays);
         if (removed > 0) {
             logger.info("[Report] cleaned " + removed + " old record file(s)");
+        }
+        int removedSnap = statsStore.cleanup(retentionDays);
+        if (removedSnap > 0) {
+            logger.info("[Stats] cleaned " + removedSnap + " old snapshot file(s)");
         }
         pruneMemory();
 
