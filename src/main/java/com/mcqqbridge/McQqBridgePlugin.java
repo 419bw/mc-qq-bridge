@@ -4,6 +4,7 @@ import com.mcqqbridge.bridge.ChatBridge;
 import com.mcqqbridge.command.McQqCommand;
 import com.mcqqbridge.config.BridgeConfig;
 import com.mcqqbridge.qq.QQBotClient;
+import com.mcqqbridge.report.AiReportSummarizer;
 import com.mcqqbridge.report.DailyReportScheduler;
 import com.mcqqbridge.report.MapRenderer;
 import com.mcqqbridge.report.ReportFormatter;
@@ -65,8 +66,14 @@ public class McQqBridgePlugin extends JavaPlugin {
         }
         MapRenderer renderer = new MapRenderer(config.getMapMaxWidth(), config.getMapPadding());
         ReportFormatter formatter = new ReportFormatter();
+        AiReportSummarizer aiSummarizer = null;
+        if (config.isAiReportEnabled() && !config.getAiApiKey().isEmpty()) {
+            aiSummarizer = new AiReportSummarizer(config.getAiBaseUrl(), config.getAiApiKey(),
+                    config.getAiModel(), config.getAiTimeoutSec(), getLogger());
+        }
         reportScheduler = new DailyReportScheduler(this, config, tracker, dataStore, statsStore,
-                renderer, formatter, qqClient, terrainCache, config.getReportHour(), config.getReportMinute(),
+                renderer, formatter, aiSummarizer, qqClient, terrainCache,
+                config.getReportHour(), config.getReportMinute(),
                 config.getRetentionDays(), config.isReportEnabled());
         reportScheduler.start();
 

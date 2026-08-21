@@ -41,6 +41,7 @@ public class DailyReportScheduler {
     private final StatsSnapshotStore statsStore;
     private final MapRenderer renderer;
     private final ReportFormatter formatter;
+    private final AiReportSummarizer aiSummarizer;
     private final QQBotClient qqClient;
     private final TerrainTileCache terrainCache;
     private final int hour;
@@ -54,6 +55,7 @@ public class DailyReportScheduler {
     public DailyReportScheduler(JavaPlugin plugin, BridgeConfig config, PlayerTracker tracker,
                                 DataStore dataStore, StatsSnapshotStore statsStore,
                                 MapRenderer renderer, ReportFormatter formatter,
+                                AiReportSummarizer aiSummarizer,
                                 QQBotClient qqClient, TerrainTileCache terrainCache,
                                 int hour, int minute, int retentionDays, boolean enabled) {
         this.plugin = plugin;
@@ -63,6 +65,7 @@ public class DailyReportScheduler {
         this.statsStore = statsStore;
         this.renderer = renderer;
         this.formatter = formatter;
+        this.aiSummarizer = aiSummarizer;
         this.qqClient = qqClient;
         this.terrainCache = terrainCache;
         this.hour = hour;
@@ -243,8 +246,7 @@ public class DailyReportScheduler {
         long now = System.currentTimeMillis();
         long stayThresholdMs = tracker.getStayThresholdMs();
         Map<String, PlayerSnapshot> snap = record.snapshotAll(stayThresholdMs);
-        ReportFormatter.ReportData data = formatter.buildSummaries(snap, online, stayThresholdMs, now);
-        String text = formatter.format(data, record.getDate());
+        String text = buildReportText(snap, online, stayThresholdMs, now, record.getDate());
         qqClient.sendGroupMessage(gid, text);
 
         World overworld = Bukkit.getWorlds().stream()
@@ -271,6 +273,21 @@ public class DailyReportScheduler {
         if (terrainCache != null) {
             terrainCache.resetFreshMarkers();
         }
+    }
+
+    /**
+     * 日报正文两条路径明确分离：AI 摘要优先，失败/未启用（返回 null）时回退固定 formatter 文本，
+     * 固定文本既是默认也是降级，永不失败。
+     */
+    private String buildReportText(Map<String, PlayerSnapshot> snap, List<ReportFormatter.OnlineSnapshot> online,
+                                   long stayMs, long now, String date) {
+        if (aiSummarizer != null) {
+            String ai = aiSummarizer.summarize(snap, date);
+            if (ai != null && !ai.isBlank()) {
+                return ai;
+            }
+        }
+        return formatter.format(formatter.buildSummaries(snap, online, stayMs, now), date);
     }
 
     /** 渲染并推送单个世界的探索图（computeWindow -> 底图 -> 叠加 -> 推送）；无该世界活动时返回 false。 */

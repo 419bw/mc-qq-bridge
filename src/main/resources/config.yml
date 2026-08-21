@@ -18,5 +18,11 @@ report:
   trail:
     time-threshold-sec: 5
     stay-threshold-sec: 30
+  ai:
+    enabled: true
+    base-url: "https://api.deepseek.com"
+    api-key: ""
+    model: "deepseek-chat"
+    timeout-sec: 30
   terrain:
     enabled: true
