@@ -2,58 +2,50 @@
 
 MC 服务器 <-> QQ 群双向聊天互通插件（Paper），基于 QQ 官方机器人 API，纯 Java 实现，无第三方框架依赖。
 
-> 状态说明：聊天互通、系统消息转发、每日日报 + 探索地图（主世界/下界）均已在服务器验证通过。
-
 ## 功能
 
-**聊天互通：**
-- QQ 群普通消息 -> 游戏内聊天（需在 QQ 开放平台开启"接收所有消息"）
-- QQ 群 @机器人 -> 游戏内聊天
-- 游戏内聊天 -> QQ 群（需群成员开启"允许主动发送"）
-- 图片/表情消息显示为 `[图片/表情消息]`（MC 无法渲染 QQ 表情/图片）
+**聊天互通**
+- QQ 群消息（含 @机器人）-> 游戏内聊天；游戏内聊天 -> QQ 群
+- 图片/表情消息以 `[图片/表情消息]` 占位显示
+- full 模式额外转发进服/退服/死亡（含死因）/成就系统消息
 
-**系统消息转发（FULL 模式）：**
-- 玩家进服/退服
-- 玩家死亡（含死因）
-- 玩家获得成就（仅游戏内公告的真成就，小进度不转发）
+**每日日报**
+- 每天定时推送到绑定群：一段文字总结 + 探索地图（PNG）
+- 文字总结由 DeepSeek AI 生成，失败自动降级为固定格式文本；涵盖在线时长、聊天、死亡、击杀、行走距离、停留等当日数据
+- 探索地图按玩家视距增量渲染地形底图（新建筑/挖掘自动更新），叠加轨迹、停留圈、死亡/成就标记；支持主世界与下界，当日有下界活动时额外推送下界图
+- 全量原版统计（挖掘/放置/合成等）每日汇总落盘，可供 AI 分析
 
-**每日日报 + 探索地图（已验证）：**
-- 数据采集：玩家跑图时后台按视距范围增量渲染地形（视距内区块 Paper 已加载，`getChunkAtAsync` 几乎零成本），每个区块的方块基色 + 高度 + 水深落盘到 `plugins/McQqBridge/map/tiles/<世界>/cXzZ.bin`（每块 3KB）；内存只保留已渲染坐标集合做标记位；启动时扫盘恢复，重启不丢、不重复渲染已渲染区块
-- **地形更新**：每日日报生成后清空本轮渲染标记，玩家再次经过的区块重新渲染反映最新地形（建筑/挖掘可见）；无人区保留旧瓦片
-- **地图缩放**：轨迹窗口超过 4096 时自动降采样（1 像素 = 2^n 方块，采样中心点），跑多远都有地形底图；坡度阴影按缩放归一化
-- 每日轨迹/聊天/事件/统计/断点落盘 `plugins/McQqBridge/data/YYYY-MM-DD.json`，保留 30 天自动清理，可供后续 AI 分析；**每 30 分钟自动保存 + 关机兜底保存**，正常重启不丢数据；**启动时自动恢复当天记录**（`data/YYYY-MM-DD.json` 读回内存续接，重启前数据完整进日报）；落盘为**原子写**（先写 tmp 再替换），覆盖前旧文件保留为 `.bak` 上一版
-- **全量原版统计**：每次结算（23:00 自动或手动）把服务器 stats 目录全量读为快照落盘 `data/stats-snapshots/`，与上一份快照 diff 得窗口增量并入日报 JSON——涵盖挖掘/放置/合成/使用/击杀等全部带类型统计，保留原始 namespace key 与原始单位（ticks/cm）供后续 LLM 分析；快照即基线，无内存状态，重启无损；stats 目录读取滞后 ≤5 分钟（服务器 autosave 节奏），窗口边界抖动不漏不重；兼容新旧目录布局（`world/players/stats/` 与 `world/stats/`）
-- 日报推送：每晚 23:00（config 可改）自动，或 `/mcqq report now` 手动触发，推送到绑定群 = 一段文字摘要 + 一张探索地图 PNG；**当日有下界活动时额外推送第二张下界图**（标题带"（下界）"）
-- **下界探索地图**：下界顶部基岩层使"最高非空气块"恒为基岩（俯视图一片基岩灰），故下界底图改用"空洞模式"渲染——整列扫描记录所有空气段（洞），选**最长空气段的底面**（第一个非空气块，液体算非空气）取色，即玩家最可能活动的空间：熔岩海显示熔岩面、菌林显示菌毯、要塞桥显示桥面、双层洞穴自动选大洞、无洞山体显示基岩色；下界阴影用低敏感度系数（垂直落差大，约 8~10 格高差才满阴影）；瓦片文件头带 4 字节渲染模式标记（0=表面/主世界，1=空洞/下界），启动扫描按世界环境过滤——下界旧格式瓦片自动作废、玩家经过时重渲染，主世界新旧瓦片兼容并存
-- 文字摘要：每玩家在线时长 / 聊天条数 / 死亡数 / 击杀数 / 行走公里数 / 最长停留时长，外加当日成就列表、死亡记录列表
-- 探索地图：方块级地图色（`BlockData.getMapColor()`，与 MC 地图物品同源）；明暗用 mojang 原版算法——陆地 = 与北邻居高度差 x0.8 + 棋盘抖动，阈值 +-0.6 分 3 档，乘数 180/220/255；水 = 按水深 x0.1 + 棋盘抖动分浅/中/深蓝 3 档；叠加玩家轨迹 + 停留圈 + 死亡红叉 + 成就金点 + 玩家名标签 + 标题 + 图例；无活动区块填深色
-- 轨迹采样：每 5 秒记一个点，坐标未变化的点不记录（挂机不产生冗余点，停留时长由相邻点时间间隔表达）；轨迹点带世界名
-- **轨迹渲染**：每人一色，暗色包边 + 方向箭头；高度分段透明度（海平面 63 为基准，地下变淡地上变实，替代旧虚线）；Douglas-Peucker 简化 + 亚像素段跳过（绕圈不堆叠）；三遍绘制（先包边后彩色再箭头）防玩家间互相遮盖
-- **断点切段**：登录/退出/死亡/传送（传送门、/tp、旁观）记为断点，段间不连线——死亡复活、传送、跨世界不产生假线；退出/死亡/传送/登录均补记位置轨迹点，标记全部落在轨迹线上；停留圈跳过横跨断点的时间差（离线/传送不误判为停留）；传送/死亡后清除节流状态，首点立即记录
-- **主世界过滤**：地图窗口、轨迹、事件、停留圈、断点标记、玩家名标签全部按主世界过滤，下界/末地坐标不混入主世界图
-- **会话标记**：登录白点+黑描边（时间）、退出黑点+白描边（时间）、中途重登黄菱形（离线分钟数）、传送灰点（主世界侧传送门位置）；时间字 8px 白字黑描边与点平行；中性色不与玩家轨迹色冲突
-
-**效果展示（探索地图示例）：**
+**效果展示：**
 
 <p align="center">
   <img src="image/exploration-map.png" alt="每日日报探索地图效果图" width="480">
 </p>
 
-## 指令（控制台 + OP，权限 mcqq.admin）
+## 指令
+
+控制台与游戏内均可使用，全部支持 Tab 补全。除 `status` 外均需 `mcqq.admin` 权限（OP 与控制台默认拥有）。未标注的配置修改后立即生效；标注「重启」的会立即写入 config.yml，重启服务器后生效。
 
 ```
-/mcqq mode <chat|full>   # 切换模式
-/mcqq report now         # 立即生成并推送今日日报
-/mcqq report toggle      # 开关每日日报
-/mcqq status             # 查看当前状态（含日报状态）
+/mcqq status                             查看当前状态与全部配置
+/mcqq mode <chat|full>                   切换桥接模式
+/mcqq bridge <mc2qq|qq2mc> <on|off>      开关转发方向
+/mcqq format <mc|qq> <格式文本>           设置转发格式（占位符 {player}/{nickname} {message}）
+/mcqq bind <openid> | unbind             手动绑定/解除 QQ 群（默认自动绑定）
+/mcqq report now | toggle                立即生成日报 / 开关每日日报
+/mcqq report time <HH:MM>                修改日报时间（重启）
+/mcqq report retention <天数>             修改数据保留天数（重启）
+/mcqq map <maxwidth|padding> <数值>       地图最大宽度（像素）/ 边距（格）
+/mcqq trail <interval|stay> <秒>          轨迹采样间隔 / 停留判定阈值（重启）
+/mcqq terrain <on|off>                   地形底图开关（重启）
+/mcqq ai <enable|disable|model|baseurl|apikey|timeout> [值]   AI 总结设置（重启）
+/mcqq qq <appid|appsecret> <值>           QQ 机器人凭据（重启）
+/mcqq reload                             从磁盘重新加载配置
 ```
 
 | 模式 | 行为 |
 |------|------|
 | `chat` | 只转发聊天消息（默认） |
 | `full` | 聊天 + 进服/退服/死亡/成就系统消息 |
-
-切换立即生效并持久化到 config.yml。写操作（`mode`、`report`）需要 `mcqq.admin` 权限（控制台与 OP 默认拥有）；`status` 不限权限。
 
 ## 构建
 
@@ -66,67 +58,65 @@ mvn package
 
 ## 部署
 
-1. **先停服，再替换 jar，再启动**（切勿在服务器运行中覆盖 jar——运行中的类加载器读到被替换的 jar 会类加载失败，导致 onDisable 保存中断）
-2. 复制 `src/main/resources/config.yml` 到 `plugins/McQqBridge/config.yml`（或先运行一次插件自动生成）
-3. 填入你的 QQ 机器人 AppID 和 AppSecret
-4. 将 jar 放入服务器的 `plugins/` 目录，重启服务器
+1. **先停服，再替换 jar，再启动**（运行中覆盖 jar 会导致类加载失败与数据保存中断）
+2. 将 jar 放入服务器 `plugins/` 目录，启动一次自动生成配置（或手动复制 `src/main/resources/config.yml`）
+3. 填入 QQ 机器人 AppID 和 AppSecret（也可用 `/mcqq qq appid|appsecret` 设置后重启）
+4. 重启服务器
 
-日报地图为插件自渲染（视距增量落盘，无需外部底图）。服务器侧仅需：
-- 安装中文字体（如 `fontconfig` + `wqy-microhei-fonts`），否则地图上的中文标签渲染为方块
+日报地图为插件自渲染，无需外部底图。服务器需安装中文字体（如 `fontconfig` + `wqy-microhei-fonts`），否则地图上的中文标签显示为方块。
 
 ## 配置
+
+所有配置项也可通过上述指令在游戏内修改。首次运行生成的 `config.yml`：
 
 ```yaml
 qq:
   app-id: "你的AppID"
   app-secret: "你的AppSecret"
-  group-openid: ""   # 留空自动绑定，或手动填写群ID
+  group-openid: ""       # 留空自动绑定，或手动填写群ID
 bridge:
-  mode: chat         # chat = 只发聊天 | full = 聊天 + 系统消息
-  mc-to-qq: true     # MC -> QQ 开关
-  qq-to-mc: true     # QQ -> MC 开关
+  mode: chat             # chat = 只发聊天 | full = 聊天 + 系统消息
+  mc-to-qq: true
+  qq-to-mc: true
   mc-format: "[MC] <{player}> {message}"
   qq-format: "[QQ] <{nickname}> {message}"
 report:
-  enabled: true              # 每日日报开关
-  time: "23:00"              # 每日推送时间
-  retention-days: 30         # 每日 JSON 保留天数
+  enabled: true
+  time: "23:00"          # 每日推送时间
+  retention-days: 30     # 日报数据保留天数
   map:
-    max-width: 1024          # 地图最大宽度（像素）
-    padding: 64              # 轨迹外边距（格）
+    max-width: 1024      # 地图最大宽度（像素）
+    padding: 64          # 轨迹外边距（格）
   trail:
     time-threshold-sec: 5    # 轨迹采样间隔（秒）
     stay-threshold-sec: 30   # 视为停留的最小间隔（秒）
+  ai:
+    enabled: true
+    base-url: "https://api.deepseek.com"
+    api-key: ""          # 留空则使用固定格式文本
+    model: "deepseek-v4-flash"
+    timeout-sec: 60
   terrain:
-    enabled: true            # 是否启用视距增量地形渲染（探索地图底图）
+    enabled: true        # 地形底图（视距增量渲染）
 ```
-
-`report` 段所有项均有默认值，已部署服务器即使 config 缺该段也能用默认值运行。
 
 ## QQ 开放平台注意事项
 
-- 开启"接收所有消息"后，群内**每一条**消息（不限于 @）都会以 `GROUP_MESSAGE_CREATE` 事件推送
-- 主动消息（非回复）需要群成员在客户端开启"允许主动发送"，否则报错 40034105
-- 被动回复（带 `msg_id`）5 分钟有效，每条消息最多回复 5 次
-- 事件昵称字段在 `author.username`（不是 `member_nick`）
-- 群图片消息：先上传（`file_data` base64 + `file_type=1`）拿 `file_info`，再以 `msg_type=7` 富媒体发送，无需公网图床
+- 群内非 @ 消息需在开放平台开启「接收所有消息」
+- 主动消息需群成员开启「允许主动发送」，否则报错 40034105
+- 被动回复（带 `msg_id`）5 分钟内有效，每条消息最多回复 5 次
+- 群图片须先上传（`file_data` base64）换取 `file_info`，再以 `msg_type=7` 富媒体发送
 
 ## 已知限制
 
-- 成就标题转发到 QQ 时为英文（服务端无语言文件），中文翻译表待实现
-- QQ 图片/表情无法在 MC 客户端渲染
-- 末地无独立底图（地图只画主世界+下界，末地轨迹被过滤，未做独立成图）
-- 端珍珠/紫颂果瞬移不记断点（瞬移属正常游戏行为，轨迹会直接连线）
-- 日报地图的中文标签依赖服务器中文字体
+- 成就标题转发到 QQ 为英文（服务端无语言文件）
+- QQ 图片/表情无法在游戏内渲染，仅占位显示
+- 末地暂不支持地图，末地轨迹不入图
+- 末影珍珠/紫颂果瞬移不记断点，轨迹直接连线
+- 日报地图中文标签依赖服务器中文字体
 
-## 技术要点
+## 实现概要
 
-- 使用 Java 11+ 内置 `HttpClient` / `WebSocket`，无额外依赖（Gson 由 Paper 提供）；地图渲染用 JDK 自带 AWT/ImageIO（headless）
-- 探索地图：方块色 `BlockData.getMapColor()`（与 MC 地图物品同源）+ mojang 原版明暗与水深算法 + 视距增量渲染落盘（`map/tiles/<世界>/cXzZ.bin`，每块 3KB）+ 自动缩放级别（1 像素 = 1/2/4/.../2^n 方块，按窗口大小自动选择）
-- WebSocket 鉴权：identify 携带 `1 << 25`（GROUP_AND_C2C_EVENT）intent
-- 断线重连带指数退避（5s 起，最大 60s）
-- Token 自动刷新（提前 60 秒过期）
-- 代码按职责分包：`qq/`（QQ 通信）、`bridge/`（聊天桥接）、`stats/`（数据采集+落盘）、`report/`（渲染+定时+文字）、`command/`（指令）、`config/`（配置）；记录与互通在代码上分离，但同属一个 jar、共享一个 QQ 连接（不拆双插件，因 QQ 一个机器人只允许一个 WebSocket 会话）
-- 瓦片格式常量、二进制读写、hillshading 底图合成统一在 `report/TileCodec`（纯 JDK 无 Bukkit），服务端 `TerrainTileCache` 与离线验证工具 `HeatmapTest`（src/test）共用，保证格式与算法单一定义
-- 数据模型 `DailyRecord` 与序列化 `DailyRecordSerializer` 分离，模型类不承担 JSON 职责
-- 采集与桥接关注点分离：数据采集不受桥接模式（chat/full）影响，始终记录
+- QQ 通信基于 JDK 内置 WebSocket/HttpClient，token 自动刷新、断线指数退避重连；地图渲染用 JDK AWT（headless），无外部依赖
+- 日报数据落盘 `plugins/McQqBridge/data/`：每 30 分钟自动保存 + 关机兜底 + 启动恢复当天记录，正常重启不丢数据
+- 地形瓦片落盘 `plugins/McQqBridge/map/tiles/`，增量渲染，重启后不重复渲染
