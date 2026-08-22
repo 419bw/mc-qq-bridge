@@ -2,6 +2,7 @@ package com.mcqqbridge.command;
 
 import com.mcqqbridge.config.BridgeConfig;
 import com.mcqqbridge.config.BridgeConfig.BridgeMode;
+import com.mcqqbridge.config.ConfigItem;
 import com.mcqqbridge.report.DailyReportScheduler;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -17,7 +18,6 @@ import java.util.logging.Logger;
 public class McQqCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = "[McQqBridge] ";
-    private static final String RESTART_HINT = "（已保存，重启服务器后生效）";
 
     private final JavaPlugin plugin;
     private final BridgeConfig config;
@@ -72,7 +72,7 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    // ---- 子命令处理 ----
+    // ---- 子命令处理（参数 -> ConfigItem 映射，解析/校验/写盘/提示统一走 applyConfig） ----
 
     private void handleMode(CommandSender sender, String[] args) {
         if (args.length < 2) {
@@ -91,24 +91,16 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("用法: /mcqq bridge <mc2qq|qq2mc> <on|off>");
             return;
         }
-        Boolean on = parseOnOff(args[2]);
-        if (on == null) {
-            sender.sendMessage("取值应为 on 或 off: " + args[2]);
+        ConfigItem item = switch (args[1].toLowerCase()) {
+            case "mc2qq" -> ConfigItem.MC_TO_QQ;
+            case "qq2mc" -> ConfigItem.QQ_TO_MC;
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage("用法: /mcqq bridge <mc2qq|qq2mc> <on|off>");
             return;
         }
-        switch (args[1].toLowerCase()) {
-            case "mc2qq" -> {
-                config.setMcToQq(on);
-                sender.sendMessage(PREFIX + "MC->QQ 转发已" + (on ? "开启" : "关闭"));
-                logger.info("MC->QQ forwarding " + (on ? "enabled" : "disabled") + " by " + sender.getName());
-            }
-            case "qq2mc" -> {
-                config.setQqToMc(on);
-                sender.sendMessage(PREFIX + "QQ->MC 转发已" + (on ? "开启" : "关闭"));
-                logger.info("QQ->MC forwarding " + (on ? "enabled" : "disabled") + " by " + sender.getName());
-            }
-            default -> sender.sendMessage("用法: /mcqq bridge <mc2qq|qq2mc> <on|off>");
-        }
+        applyConfig(sender, item, args[2]);
     }
 
     private void handleFormat(CommandSender sender, String[] args) {
@@ -116,20 +108,16 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("用法: /mcqq format <mc|qq> <格式文本> (占位符: {player}/{nickname} {message})");
             return;
         }
-        String fmt = String.join(" ", Arrays.copyOfRange(args, 2, args.length));
-        switch (args[1].toLowerCase()) {
-            case "mc" -> {
-                config.setMcFormat(fmt);
-                sender.sendMessage(PREFIX + "MC->QQ 格式已更新: " + fmt);
-                logger.info("MC->QQ format changed by " + sender.getName());
-            }
-            case "qq" -> {
-                config.setQqFormat(fmt);
-                sender.sendMessage(PREFIX + "QQ->MC 格式已更新: " + fmt);
-                logger.info("QQ->MC format changed by " + sender.getName());
-            }
-            default -> sender.sendMessage("用法: /mcqq format <mc|qq> <格式文本>");
+        ConfigItem item = switch (args[1].toLowerCase()) {
+            case "mc" -> ConfigItem.MC_FORMAT;
+            case "qq" -> ConfigItem.QQ_FORMAT;
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage("用法: /mcqq format <mc|qq> <格式文本>");
+            return;
         }
+        applyConfig(sender, item, String.join(" ", Arrays.copyOfRange(args, 2, args.length)));
     }
 
     private void handleBind(CommandSender sender, String[] args) {
@@ -165,71 +153,51 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("用法: /mcqq report time <HH:MM>");
                     return;
                 }
-                if (!args[2].matches("^([01]?\\d|2[0-3]):[0-5]\\d$")) {
-                    sender.sendMessage("时间格式应为 HH:MM，如 23:00");
-                    return;
-                }
-                config.setReportTime(args[2]);
-                sender.sendMessage(PREFIX + "日报时间已设为 " + args[2] + RESTART_HINT);
-                logger.info("Daily report time changed to " + args[2] + " by " + sender.getName());
+                applyConfig(sender, ConfigItem.REPORT_TIME, args[2]);
             }
             case "retention" -> {
-                Integer days = parseIntArg(sender, args, 2, "保留天数", 1, 3650);
-                if (days == null) return;
-                config.setRetentionDays(days);
-                sender.sendMessage(PREFIX + "数据保留天数已设为 " + days + RESTART_HINT);
-                logger.info("Retention days changed to " + days + " by " + sender.getName());
+                if (args.length < 3) {
+                    sender.sendMessage("用法: /mcqq report retention <天数>");
+                    return;
+                }
+                applyConfig(sender, ConfigItem.RETENTION_DAYS, args[2]);
             }
             default -> sendHelp(sender);
         }
     }
 
     private void handleMap(CommandSender sender, String[] args) {
-        if (args.length < 2) {
+        if (args.length < 3) {
             sender.sendMessage("用法: /mcqq map <maxwidth|padding> <数值>");
             return;
         }
-        switch (args[1].toLowerCase()) {
-            case "maxwidth" -> {
-                Integer v = parseIntArg(sender, args, 2, "最大宽度", 64, 8192);
-                if (v == null) return;
-                config.setMapMaxWidth(v);
-                sender.sendMessage(PREFIX + "地图最大宽度已设为 " + v + "px" + RESTART_HINT);
-                logger.info("Map max-width changed to " + v + " by " + sender.getName());
-            }
-            case "padding" -> {
-                Integer v = parseIntArg(sender, args, 2, "边距", 0, 1024);
-                if (v == null) return;
-                config.setMapPadding(v);
-                sender.sendMessage(PREFIX + "地图边距已设为 " + v + " 格（下次出报生效）");
-                logger.info("Map padding changed to " + v + " by " + sender.getName());
-            }
-            default -> sender.sendMessage("用法: /mcqq map <maxwidth|padding> <数值>");
+        ConfigItem item = switch (args[1].toLowerCase()) {
+            case "maxwidth" -> ConfigItem.MAP_MAX_WIDTH;
+            case "padding" -> ConfigItem.MAP_PADDING;
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage("用法: /mcqq map <maxwidth|padding> <数值>");
+            return;
         }
+        applyConfig(sender, item, args[2]);
     }
 
     private void handleTrail(CommandSender sender, String[] args) {
-        if (args.length < 2) {
+        if (args.length < 3) {
             sender.sendMessage("用法: /mcqq trail <interval|stay> <秒>");
             return;
         }
-        switch (args[1].toLowerCase()) {
-            case "interval" -> {
-                Integer v = parseIntArg(sender, args, 2, "采样间隔(秒)", 1, 600);
-                if (v == null) return;
-                config.setTrailIntervalSec(v);
-                sender.sendMessage(PREFIX + "轨迹采样间隔已设为 " + v + " 秒" + RESTART_HINT);
-                logger.info("Trail interval changed to " + v + "s by " + sender.getName());
-            }
-            case "stay" -> {
-                Integer v = parseIntArg(sender, args, 2, "停留判定(秒)", 5, 3600);
-                if (v == null) return;
-                config.setStayThresholdSec(v);
-                sender.sendMessage(PREFIX + "停留判定阈值已设为 " + v + " 秒" + RESTART_HINT);
-                logger.info("Stay threshold changed to " + v + "s by " + sender.getName());
-            }
-            default -> sender.sendMessage("用法: /mcqq trail <interval|stay> <秒>");
+        ConfigItem item = switch (args[1].toLowerCase()) {
+            case "interval" -> ConfigItem.TRAIL_INTERVAL;
+            case "stay" -> ConfigItem.STAY_THRESHOLD;
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage("用法: /mcqq trail <interval|stay> <秒>");
+            return;
         }
+        applyConfig(sender, item, args[2]);
     }
 
     private void handleTerrain(CommandSender sender, String[] args) {
@@ -237,14 +205,7 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("用法: /mcqq terrain <on|off>");
             return;
         }
-        Boolean on = parseOnOff(args[1]);
-        if (on == null) {
-            sender.sendMessage("取值应为 on 或 off: " + args[1]);
-            return;
-        }
-        config.setTerrainEnabled(on);
-        sender.sendMessage(PREFIX + "地形底图已" + (on ? "开启" : "关闭") + RESTART_HINT);
-        logger.info("Terrain basemap " + (on ? "enabled" : "disabled") + " by " + sender.getName());
+        applyConfig(sender, ConfigItem.TERRAIN, args[1]);
     }
 
     private void handleAi(CommandSender sender, String[] args) {
@@ -253,35 +214,20 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             return;
         }
         switch (args[1].toLowerCase()) {
-            case "enable" -> {
-                config.setAiReportEnabled(true);
-                sender.sendMessage(PREFIX + "AI 日报总结已开启" + RESTART_HINT);
-                logger.info("AI report enabled by " + sender.getName());
-            }
-            case "disable" -> {
-                config.setAiReportEnabled(false);
-                sender.sendMessage(PREFIX + "AI 日报总结已关闭" + RESTART_HINT);
-                logger.info("AI report disabled by " + sender.getName());
-            }
-            case "model", "baseurl", "apikey" -> {
+            case "enable" -> applyConfig(sender, ConfigItem.AI_ENABLED, "on");
+            case "disable" -> applyConfig(sender, ConfigItem.AI_ENABLED, "off");
+            case "model", "baseurl", "apikey", "timeout" -> {
+                ConfigItem item = switch (args[1].toLowerCase()) {
+                    case "model" -> ConfigItem.AI_MODEL;
+                    case "baseurl" -> ConfigItem.AI_BASE_URL;
+                    case "apikey" -> ConfigItem.AI_API_KEY;
+                    default -> ConfigItem.AI_TIMEOUT;
+                };
                 if (args.length < 3) {
                     sender.sendMessage("用法: /mcqq ai " + args[1].toLowerCase() + " <值>");
                     return;
                 }
-                switch (args[1].toLowerCase()) {
-                    case "model" -> config.setAiModel(args[2]);
-                    case "baseurl" -> config.setAiBaseUrl(args[2]);
-                    case "apikey" -> config.setAiApiKey(args[2]);
-                }
-                sender.sendMessage(PREFIX + "AI " + args[1].toLowerCase() + " 已设为 " + args[2] + RESTART_HINT);
-                logger.info("AI " + args[1].toLowerCase() + " changed by " + sender.getName());
-            }
-            case "timeout" -> {
-                Integer v = parseIntArg(sender, args, 2, "超时(秒)", 1, 600);
-                if (v == null) return;
-                config.setAiTimeoutSec(v);
-                sender.sendMessage(PREFIX + "AI 超时已设为 " + v + " 秒" + RESTART_HINT);
-                logger.info("AI timeout changed to " + v + "s by " + sender.getName());
+                applyConfig(sender, item, args[2]);
             }
             default -> sender.sendMessage("用法: /mcqq ai <enable|disable|model|baseurl|apikey|timeout> [值]");
         }
@@ -292,19 +238,75 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("用法: /mcqq qq <appid|appsecret> <值>");
             return;
         }
-        switch (args[1].toLowerCase()) {
-            case "appid" -> {
-                config.setAppId(args[2]);
-                sender.sendMessage(PREFIX + "QQ AppID 已设置" + RESTART_HINT);
-                logger.info("QQ app-id changed by " + sender.getName());
-            }
-            case "appsecret" -> {
-                config.setAppSecret(args[2]);
-                sender.sendMessage(PREFIX + "QQ AppSecret 已设置" + RESTART_HINT);
-                logger.info("QQ app-secret changed by " + sender.getName());
-            }
-            default -> sender.sendMessage("用法: /mcqq qq <appid|appsecret> <值>");
+        ConfigItem item = switch (args[1].toLowerCase()) {
+            case "appid" -> ConfigItem.QQ_APP_ID;
+            case "appsecret" -> ConfigItem.QQ_APP_SECRET;
+            default -> null;
+        };
+        if (item == null) {
+            sender.sendMessage("用法: /mcqq qq <appid|appsecret> <值>");
+            return;
         }
+        applyConfig(sender, item, args[2]);
+    }
+
+    // ---- 注册表驱动的统一设置入口 ----
+
+    /** 解析校验 -> 写内存+落盘 -> 按生效范围发确认提示。 */
+    private void applyConfig(CommandSender sender, ConfigItem item, String raw) {
+        Object value = parseValue(sender, item, raw);
+        if (value == null) {
+            return;
+        }
+        config.apply(item, value);
+        sender.sendMessage(PREFIX + describeChange(item, value) + item.scope().hint());
+        logger.info(item.path() + (item.secret() ? " changed" : " set to " + value) + " by " + sender.getName());
+    }
+
+    /** 按配置项的值类型解析校验原始输入；失败时发出错误提示并返回 null。 */
+    private Object parseValue(CommandSender sender, ConfigItem item, String raw) {
+        return switch (item.kind()) {
+            case ON_OFF -> {
+                Boolean b = parseOnOff(raw);
+                if (b == null) {
+                    sender.sendMessage("取值应为 on 或 off: " + raw);
+                }
+                yield b;
+            }
+            case INT -> {
+                Integer v = null;
+                try {
+                    int parsed = Integer.parseInt(raw);
+                    if (parsed < item.min() || parsed > item.max()) {
+                        sender.sendMessage(item.label() + " 应在 " + item.min() + "~" + item.max() + " 之间");
+                    } else {
+                        v = parsed;
+                    }
+                } catch (NumberFormatException e) {
+                    sender.sendMessage(item.label() + " 应为整数: " + raw);
+                }
+                yield v;
+            }
+            case TIME -> {
+                if (!ConfigItem.isValidTime(raw)) {
+                    sender.sendMessage("时间格式应为 HH:MM，如 23:00");
+                    yield null;
+                }
+                yield raw;
+            }
+            case TEXT -> raw;
+        };
+    }
+
+    /** 确认文案：密文不回显值，布尔用"已开启/已关闭"，其余"已设为 值+单位"。 */
+    private String describeChange(ConfigItem item, Object value) {
+        if (item.secret()) {
+            return item.label() + " 已设置";
+        }
+        if (value instanceof Boolean b) {
+            return item.label() + (b ? " 已开启" : " 已关闭");
+        }
+        return item.label() + " 已设为 " + value + item.unit();
     }
 
     // ---- Tab 补全 ----
@@ -413,24 +415,6 @@ public class McQqCommand implements CommandExecutor, TabCompleter {
             case "off", "false" -> false;
             default -> null;
         };
-    }
-
-    private Integer parseIntArg(CommandSender sender, String[] args, int idx, String name, int min, int max) {
-        if (args.length <= idx) {
-            sender.sendMessage("缺少参数: " + name);
-            return null;
-        }
-        try {
-            int v = Integer.parseInt(args[idx]);
-            if (v < min || v > max) {
-                sender.sendMessage(name + "应在 " + min + "~" + max + " 之间");
-                return null;
-            }
-            return v;
-        } catch (NumberFormatException e) {
-            sender.sendMessage(name + "应为整数: " + args[idx]);
-            return null;
-        }
     }
 
     private String pad2(int n) {
