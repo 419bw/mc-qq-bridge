@@ -194,4 +194,112 @@ public class BridgeConfig {
         plugin.getConfig().set("qq.group-openid", openId);
         plugin.saveConfig();
     }
+
+    public void setMcToQq(boolean enabled) {
+        this.mcToQq = enabled;
+        plugin.getConfig().set("bridge.mc-to-qq", enabled);
+        plugin.saveConfig();
+    }
+
+    public void setQqToMc(boolean enabled) {
+        this.qqToMc = enabled;
+        plugin.getConfig().set("bridge.qq-to-mc", enabled);
+        plugin.saveConfig();
+    }
+
+    public void setMcFormat(String format) {
+        this.mcFormat = format;
+        plugin.getConfig().set("bridge.mc-format", format);
+        plugin.saveConfig();
+    }
+
+    public void setQqFormat(String format) {
+        this.qqFormat = format;
+        plugin.getConfig().set("bridge.qq-format", format);
+        plugin.saveConfig();
+    }
+
+    public void setReportTime(String time) {
+        parseReportTime(time);
+        plugin.getConfig().set("report.time", time);
+        plugin.saveConfig();
+    }
+
+    public void setRetentionDays(int days) {
+        this.retentionDays = days;
+        plugin.getConfig().set("report.retention-days", days);
+        plugin.saveConfig();
+    }
+
+    public void setMapMaxWidth(int width) {
+        this.mapMaxWidth = width;
+        plugin.getConfig().set("report.map.max-width", width);
+        plugin.saveConfig();
+    }
+
+    public void setMapPadding(int padding) {
+        this.mapPadding = padding;
+        plugin.getConfig().set("report.map.padding", padding);
+        plugin.saveConfig();
+    }
+
+    public void setTrailIntervalSec(int sec) {
+        this.trailIntervalMs = sec * 1000L;
+        plugin.getConfig().set("report.trail.time-threshold-sec", sec);
+        plugin.saveConfig();
+    }
+
+    public void setStayThresholdSec(int sec) {
+        this.stayThresholdMs = sec * 1000L;
+        plugin.getConfig().set("report.trail.stay-threshold-sec", sec);
+        plugin.saveConfig();
+    }
+
+    public void setTerrainEnabled(boolean enabled) {
+        this.terrainEnabled = enabled;
+        plugin.getConfig().set("report.terrain.enabled", enabled);
+        plugin.saveConfig();
+    }
+
+    public void setAiReportEnabled(boolean enabled) {
+        this.aiReportEnabled = enabled;
+        plugin.getConfig().set("report.ai.enabled", enabled);
+        plugin.saveConfig();
+    }
+
+    public void setAiBaseUrl(String url) {
+        this.aiBaseUrl = url;
+        plugin.getConfig().set("report.ai.base-url", url);
+        plugin.saveConfig();
+    }
+
+    public void setAiApiKey(String key) {
+        this.aiApiKey = key;
+        plugin.getConfig().set("report.ai.api-key", key);
+        plugin.saveConfig();
+    }
+
+    public void setAiModel(String model) {
+        this.aiModel = model;
+        plugin.getConfig().set("report.ai.model", model);
+        plugin.saveConfig();
+    }
+
+    public void setAiTimeoutSec(int sec) {
+        this.aiTimeoutSec = sec;
+        plugin.getConfig().set("report.ai.timeout-sec", sec);
+        plugin.saveConfig();
+    }
+
+    public void setAppId(String appId) {
+        this.appId = appId;
+        plugin.getConfig().set("qq.app-id", appId);
+        plugin.saveConfig();
+    }
+
+    public void setAppSecret(String appSecret) {
+        this.appSecret = appSecret;
+        plugin.getConfig().set("qq.app-secret", appSecret);
+        plugin.saveConfig();
+    }
 }

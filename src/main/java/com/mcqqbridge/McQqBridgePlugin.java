@@ -90,6 +90,7 @@ public class McQqBridgePlugin extends JavaPlugin {
 
         McQqCommand command = new McQqCommand(this, config, reportScheduler);
         getCommand("mcqq").setExecutor(command);
+        getCommand("mcqq").setTabCompleter(command);
 
         qqClient.start();
         getLogger().info("McQqBridge enabled! Mode: " + config.getMode());

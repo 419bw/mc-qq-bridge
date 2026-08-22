@@ -6,7 +6,7 @@ description: Bridge MC chat with QQ official bot
 commands:
   mcqq:
     description: McQqBridge management commands
-    usage: /mcqq mode <chat|full> | /mcqq status
+    usage: /mcqq <status|mode|bridge|format|bind|unbind|report|map|trail|terrain|ai|qq|reload>
 permissions:
   mcqq.admin:
     description: Allows using /mcqq commands
