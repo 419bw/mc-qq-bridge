@@ -166,13 +166,18 @@ public class DailyRecord {
         return stays;
     }
 
-    // 断点按时间升序；判断 (aT, bT] 区间内是否存在断点
-    private static boolean hasBreakBetween(List<BreakPoint> breaks, long aT, long bT) {
+    /**
+     * 断点按时间升序；判断 [aT, bT) 区间内是否存在断点（左闭右开）。
+     * 左闭覆盖死亡/传送/退服时"断点与轨迹点同 t"的时序，使瞬移被切断；
+     * 右开保留 b 点自身（走向死亡点/传送点的真实移动）不被切断。
+     * 供停留计算（computeStaysLocked）与 AI 轨迹摘要（AiReportInput 的移动距离累计）共用。
+     */
+    public static boolean hasBreakBetween(List<BreakPoint> breaks, long aT, long bT) {
         for (BreakPoint br : breaks) {
-            if (br.t() > bT) {
+            if (br.t() >= bT) {
                 return false;
             }
-            if (br.t() > aT) {
+            if (br.t() >= aT) {
                 return true;
             }
         }

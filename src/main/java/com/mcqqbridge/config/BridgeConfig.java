@@ -31,6 +31,11 @@ public class BridgeConfig {
     private long trailIntervalMs;
     private long stayThresholdMs;
     private boolean terrainEnabled;
+    private boolean aiReportEnabled;
+    private String aiBaseUrl;
+    private String aiApiKey;
+    private String aiModel;
+    private int aiTimeoutSec;
 
     public BridgeConfig(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -62,6 +67,11 @@ public class BridgeConfig {
         trailIntervalMs = c.getInt("report.trail.time-threshold-sec", 5) * 1000L;
         stayThresholdMs = c.getInt("report.trail.stay-threshold-sec", 30) * 1000L;
         terrainEnabled = c.getBoolean("report.terrain.enabled", true);
+        aiReportEnabled = c.getBoolean("report.ai.enabled", true);
+        aiBaseUrl = c.getString("report.ai.base-url", "https://api.deepseek.com");
+        aiApiKey = c.getString("report.ai.api-key", "");
+        aiModel = c.getString("report.ai.model", "deepseek-chat");
+        aiTimeoutSec = c.getInt("report.ai.timeout-sec", 30);
     }
 
     private void parseReportTime(String time) {
@@ -145,6 +155,26 @@ public class BridgeConfig {
 
     public boolean isTerrainEnabled() {
         return terrainEnabled;
+    }
+
+    public boolean isAiReportEnabled() {
+        return aiReportEnabled;
+    }
+
+    public String getAiBaseUrl() {
+        return aiBaseUrl == null ? "" : aiBaseUrl;
+    }
+
+    public String getAiApiKey() {
+        return aiApiKey == null ? "" : aiApiKey;
+    }
+
+    public String getAiModel() {
+        return aiModel == null ? "" : aiModel;
+    }
+
+    public int getAiTimeoutSec() {
+        return aiTimeoutSec;
     }
 
     public void setMode(BridgeMode newMode) {

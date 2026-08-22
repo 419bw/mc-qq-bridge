@@ -4,7 +4,6 @@ import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
-import org.bukkit.Statistic;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -36,7 +35,6 @@ public class PlayerTracker implements Listener {
     private final JavaPlugin plugin;
     private final long trailIntervalMs;
     private final long stayThresholdMs;
-    private final StatisticsSnapshot statistics = new StatisticsSnapshot();
     private final Map<String, DailyRecord> records = new ConcurrentHashMap<>();
     private final Map<UUID, TrailState> trailState = new ConcurrentHashMap<>();
     private final Map<UUID, Long> joinTime = new ConcurrentHashMap<>();
@@ -89,7 +87,6 @@ public class PlayerTracker implements Listener {
         UUID id = player.getUniqueId();
         long now = System.currentTimeMillis();
         joinTime.put(id, now);
-        statistics.recordBaseline(player);
         trailState.remove(id); // 进服首个移动点立即记录
         Location loc = player.getLocation();
         String world = loc.getWorld().getName();
@@ -108,16 +105,13 @@ public class PlayerTracker implements Listener {
         if (jt != null) {
             todayRecord().addPlaytime(player.getName(), now - jt);
         }
-        Map<Statistic, Integer> delta = statistics.computeAndRemoveDelta(player);
-        DailyRecord record = todayRecord();
-        delta.forEach((s, v) -> record.addStat(player.getName(), s.name(), v));
         trailState.remove(id);
         Location loc = player.getLocation();
         String world = loc.getWorld().getName();
         int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
         // 补记退出位置轨迹点，避免轨迹线末端与 QUIT 标记之间割裂
-        record.addTrail(player.getName(), bx, by, bz, now, world);
-        record.addBreak(player.getName(), "QUIT", world, bx, by, bz, now);
+        todayRecord().addTrail(player.getName(), bx, by, bz, now, world);
+        todayRecord().addBreak(player.getName(), "QUIT", world, bx, by, bz, now);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -196,8 +190,9 @@ public class PlayerTracker implements Listener {
     }
 
     /**
-     * 日报触发时主线程调用：把在线玩家本窗口的时长/统计增量结算进当前 record，
-     * joinTime 重置、统计基线前移，后续退出时只结算剩余部分给新窗口。
+     * 日报触发时主线程调用：把在线玩家本窗口的在线时长结算进当前 record，
+     * joinTime 重置，后续退出时只结算剩余部分给新窗口。
+     * 统计增量不走内存基线，由结算点的原版 stats 快照 diff 提供（见 StatsSnapshotStore）。
      */
     public void settleOnline() {
         long now = System.currentTimeMillis();
@@ -207,10 +202,6 @@ public class PlayerTracker implements Listener {
                 todayRecord().addPlaytime(p.getName(), now - jt);
                 joinTime.put(p.getUniqueId(), now);
             }
-            Map<Statistic, Integer> delta = statistics.computeAndRemoveDelta(p);
-            DailyRecord record = todayRecord();
-            delta.forEach((s, v) -> record.addStat(p.getName(), s.name(), v));
-            statistics.recordBaseline(p);
         }
     }
 
@@ -230,11 +221,6 @@ public class PlayerTracker implements Listener {
 
     public void removeRecord(String date) {
         records.remove(date);
-    }
-
-    /** 在线玩家自进服以来尚未结算的统计增量（结算时临时合并展示，不写入 record）。 */
-    public Map<Statistic, Integer> currentOnlineDelta(Player player) {
-        return statistics.currentDelta(player);
     }
 
     /** 在线玩家本次进服的时间戳，用于结算当前在线时长段。 */
